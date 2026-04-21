@@ -15,7 +15,7 @@ import binascii
 import json
 import threading
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -46,9 +46,46 @@ def _trace_summary(item: Dict[str, Any]) -> str:
         appr = item.get("approval", {})
         return f"Approval required for {appr.get('capability', '?')} (tier {appr.get('risk_tier', '?')})"
     if event == "action.executed":
-        return item.get("result", {}).get("summary", "Action executed")
+        result = item.get("result", {}) or {}
+        proposal = result.get("proposal", {}) or {}
+        cap = proposal.get("capability", "")
+        if cap in {"browser.read_page", "browser.summarize", "browser.current_page"}:
+            out = result.get("output", {}) or {}
+            url = out.get("url") or ""
+            title = out.get("title") or ""
+            if title and url:
+                return f"{cap}: {title} ({url})"
+            if url:
+                return f"{cap}: {url}"
+        return result.get("summary", "Action executed")
     if event == "lesson.proposed":
         return f"Lesson proposed: {item.get('memory', {}).get('summary', '')}"
+    if event.startswith("workflow."):
+        wf = item.get("workflow") or {}
+        suffix = event.split(".", 1)[1] if "." in event else event
+        cur = wf.get("currentStep", 0)
+        total = len(wf.get("steps") or [])
+        pid = wf.get("patternId", "?")
+        if suffix == "created":
+            return f"Workflow created ({pid}) — {total} steps"
+        if suffix == "waiting_for_approval":
+            return f"Workflow {pid} paused at step {cur + 1}/{total} (approval required)"
+        if suffix == "completed":
+            return f"Workflow {pid} completed ({total} steps)"
+        if suffix == "failed":
+            err = wf.get("error") or "unknown reason"
+            return f"Workflow {pid} failed: {err}"
+        if suffix == "in_progress":
+            return f"Workflow {pid} in progress (step {cur + 1}/{total})"
+        return f"Workflow {pid} → {suffix}"
+    if event == "plan.evaluated":
+        plan = item.get("plan", {})
+        status = plan.get("status")
+        if status == "mapped":
+            return f"Planner mapped → {plan.get('capability')} ({plan.get('matchedRule')})"
+        if status == "clarification_needed":
+            return f"Planner needs clarification: {plan.get('ambiguity') or 'ambiguous target'}"
+        return f"Planner: unsupported — {plan.get('ambiguity') or 'no matching rule'}"
     return item.get("summary", event)
 
 
@@ -89,6 +126,8 @@ def _build_hud_state() -> Dict[str, Any]:
             "voice": {"state": "idle", "enabled": False, "transcript": None,
                       "error": None, "provider": "unavailable",
                       "lastAudioBytes": 0, "lastMime": None, "updatedAt": ""},
+            "browserContext": None,
+            "workflow": None,
             "degraded": True,
             "degradedReason": "Orchestrator not initialised",
         }
@@ -146,6 +185,18 @@ def _build_hud_state() -> Dict[str, Any]:
             "verification": latest.verification,
         }
 
+    current_plan: Optional[Dict[str, Any]] = None
+    plan_action: Optional[Dict[str, Any]] = None
+    workflow_view: Optional[Dict[str, Any]] = None
+    if task is not None:
+        ctx = getattr(task, "context", {}) or {}
+        if isinstance(ctx.get("plan"), dict):
+            current_plan = ctx["plan"]
+        if isinstance(ctx.get("planAction"), dict):
+            plan_action = ctx["planAction"]
+        if isinstance(ctx.get("workflow"), dict):
+            workflow_view = ctx["workflow"]
+
     return {
         "mode": "Guarded Autonomy",
         "task": task.objective if task else "",
@@ -156,7 +207,11 @@ def _build_hud_state() -> Dict[str, Any]:
         "trace": trace,
         "latestResult": latest_result,
         "currentTaskId": task.task_id if task else None,
+        "currentPlan": current_plan,
+        "planAction": plan_action,
         "voice": _api.voice.snapshot(),
+        "browserContext": _api.browser_context.snapshot(),
+        "workflow": workflow_view,
         "degraded": False,
     }
 
@@ -180,11 +235,16 @@ class _BridgeHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, data: Any, code: int = 200) -> None:
         body = json.dumps(data).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            # The desktop client timed out or disconnected while a long-running
+            # operation was in flight. Treat this as a benign disconnect.
+            return
 
     def _send_error_json(self, code: int, message: str) -> None:
         self._send_json({"error": message}, code)
@@ -228,6 +288,11 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                 self._send_error_json(503, "Orchestrator not initialised")
                 return
             self._send_json(_api.voice.snapshot())
+        elif path == "/browser/context":
+            if _api is None:
+                self._send_error_json(503, "Orchestrator not initialised")
+                return
+            self._send_json({"context": _api.browser_context.snapshot()})
         elif path == "/approvals":
             if _api is None:
                 self._send_error_json(503, "Orchestrator not initialised")
@@ -287,8 +352,55 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         elif path == "/voice/enable":
             self._handle_voice_enable()
 
+        elif path == "/browser/snapshot":
+            self._handle_browser_snapshot()
+        elif path == "/browser/clear":
+            self._handle_browser_clear()
+
         else:
             self._send_error_json(404, f"Unknown route: {path}")
+
+    # ------------------------------------------------------------------
+    # Browser context handlers
+    # ------------------------------------------------------------------
+    def _handle_browser_snapshot(self) -> None:
+        """Explicit, user-initiated push of the current page into context.
+
+        The HUD (or any local tool) can send the URL/title/text it
+        observes, and the planner will treat it as the 'current page'.
+        We do NOT fetch anything on the user's behalf here — this is
+        purely a record of what the caller supplied.
+        """
+        if _api is None:
+            self._send_error_json(503, "Orchestrator not initialised")
+            return
+        body = self._read_json_body()
+        if body is None:
+            self._send_error_json(400, "Invalid JSON body")
+            return
+        url = (body.get("url") or "").strip()
+        if not url:
+            self._send_error_json(400, "Field 'url' is required")
+            return
+        try:
+            snap = _api.browser_context.record_page(
+                url=url,
+                title=body.get("title"),
+                text_excerpt=body.get("text") or body.get("textExcerpt"),
+                byte_count=int(body.get("byteCount") or 0),
+                source="hud.snapshot",
+            )
+        except ValueError as exc:
+            self._send_error_json(400, str(exc))
+            return
+        self._send_json({"context": snap})
+
+    def _handle_browser_clear(self) -> None:
+        if _api is None:
+            self._send_error_json(503, "Orchestrator not initialised")
+            return
+        _api.browser_context.clear()
+        self._send_json({"context": _api.browser_context.snapshot()})
 
     # ------------------------------------------------------------------
     # Action workflow handlers
@@ -350,7 +462,9 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             self._send_error_json(400, "Field 'approval_id' is required")
             return
         try:
-            result = _api.supervisor.approve_and_execute(approval_id)
+            # Route through the API wrapper so any owning workflow also
+            # advances / pauses / fails alongside the supervisor action.
+            result = _api.approve_and_execute(approval_id)
             self._send_json({"result": result.to_dict(),
                              "verification": result.verification}, 200)
         except KeyError as exc:
@@ -369,7 +483,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             self._send_error_json(400, "Field 'approval_id' is required")
             return
         try:
-            payload = _api.supervisor.deny_approval(approval_id, reason=reason)
+            payload = _api.deny_approval(approval_id, reason=reason)
             self._send_json(payload, 200)
         except KeyError as exc:
             self._send_error_json(404, str(exc))
@@ -456,7 +570,7 @@ class _BridgeHandler(BaseHTTPRequestHandler):
 # Public API
 # ---------------------------------------------------------------------------
 
-def start_server(api: Any, port: int = PORT, *, daemon: bool = True) -> HTTPServer:
+def start_server(api: Any, port: int = PORT, *, daemon: bool = True) -> ThreadingHTTPServer:
     """Initialise the bridge with a LocalSupervisorAPI and start serving.
 
     Returns the HTTPServer instance (call .shutdown() to stop).
@@ -464,6 +578,6 @@ def start_server(api: Any, port: int = PORT, *, daemon: bool = True) -> HTTPServ
     global _api
     _api = api
 
-    server = HTTPServer(("127.0.0.1", port), _BridgeHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), _BridgeHandler)
     threading.Thread(target=server.serve_forever, name="jarvis-bridge", daemon=daemon).start()
     return server

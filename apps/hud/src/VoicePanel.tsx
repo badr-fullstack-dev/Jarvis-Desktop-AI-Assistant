@@ -10,6 +10,18 @@ interface Props {
   onToggleTts: (next: boolean) => void;
 }
 
+function pickRecorderMimeType(): string | undefined {
+  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+    return undefined;
+  }
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+  ];
+  return candidates.find((mime) => MediaRecorder.isTypeSupported(mime));
+}
+
 function toBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -61,12 +73,16 @@ export function VoicePanel({ voice, degraded, onAfterAction, ttsEnabled, onToggl
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       chunksRef.current = [];
-      const rec = new MediaRecorder(stream);
+      const mimeType = pickRecorderMimeType();
+      const rec = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       rec.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
       mediaRecorderRef.current = rec;
-      rec.start();
+      // Timeslice forces periodic dataavailable events, so even a short
+      // press produces a well-formed container with real cluster data
+      // instead of just an EBML header (which ffmpeg rejects).
+      rec.start(250);
       onAfterAction();
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : String(err));
@@ -86,6 +102,10 @@ export function VoicePanel({ voice, degraded, onAfterAction, ttsEnabled, onToggl
 
     const stopped = new Promise<Blob>((resolve) => {
       rec.onstop = () => {
+        // Prefer the MIME actually negotiated with the recorder — on some
+        // WebView2 builds `rec.mimeType` loses the codec suffix between
+        // start and stop, which makes the backend's decoder pick a wrong
+        // file-suffix hint for ffmpeg.
         const type = rec.mimeType || "audio/webm";
         resolve(new Blob(chunksRef.current, { type }));
       };
@@ -93,7 +113,14 @@ export function VoicePanel({ voice, degraded, onAfterAction, ttsEnabled, onToggl
     try {
       rec.stop();
       const blob = await stopped;
-      const audioBase64 = blob.size > 0 ? await toBase64(blob) : "";
+      if (blob.size < 512) {
+        // Too small to possibly contain audio clusters — treat as a missed
+        // press instead of letting the backend fail on a header-only WebM.
+        throw new Error(
+          `Recording was too short (${blob.size} bytes). Hold the button for at least a moment and speak before releasing.`,
+        );
+      }
+      const audioBase64 = await toBase64(blob);
       await invoke("voice_stop", { audioBase64, mime: blob.type || "audio/webm" });
       onAfterAction();
     } catch (err) {
@@ -204,7 +231,15 @@ export function VoicePanel({ voice, degraded, onAfterAction, ttsEnabled, onToggl
       <p className="voice-hint">
         Push-to-talk only. The microphone opens on press and closes on release.
         Nothing is recorded in the background. Transcription provider:{" "}
-        <code>{provider}</code>.
+        <code>{provider}</code>
+        {provider === "stub" && (
+          <>
+            {" "}— <strong>not real speech recognition</strong>. Set{" "}
+            <code>JARVIS_STT_PROVIDER=faster-whisper</code> on the bridge
+            process to enable local Whisper transcription (see README).
+          </>
+        )}
+        .
       </p>
 
       {showMic && (

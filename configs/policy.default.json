@@ -30,6 +30,18 @@
         "web.read"
       ]
     },
+    "browser.summarize": {
+      "tier": 0,
+      "scopes": [
+        "web.read"
+      ]
+    },
+    "browser.current_page": {
+      "tier": 0,
+      "scopes": [
+        "web.read"
+      ]
+    },
     "browser.navigate": {
       "tier": 0,
       "scopes": [

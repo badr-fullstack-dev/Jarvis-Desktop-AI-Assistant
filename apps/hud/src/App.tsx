@@ -2,7 +2,10 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HudState } from "./contracts";
 import { ActionPanel } from "./ActionPanel";
+import { BrowserPanel } from "./BrowserPanel";
+import { PlanPanel } from "./PlanPanel";
 import { VoicePanel } from "./VoicePanel";
+import { WorkflowPanel } from "./WorkflowPanel";
 
 type LiveHudState = HudState & { degraded?: boolean; degradedReason?: string };
 
@@ -288,6 +291,16 @@ export default function App() {
           ))}
           {approvalError && <p className="form-error">{approvalError}</p>}
         </section>
+
+        <PlanPanel plan={state.currentPlan} planAction={state.planAction} />
+
+        <WorkflowPanel workflow={state.workflow} />
+
+        <BrowserPanel
+          context={state.browserContext}
+          degraded={degraded}
+          onAfterAction={refresh}
+        />
 
         <VoicePanel
           voice={state.voice}

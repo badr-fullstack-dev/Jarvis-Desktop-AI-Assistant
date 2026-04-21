@@ -5,6 +5,7 @@ use serde_json::Value;
 
 const BRIDGE_BASE: &str = "http://127.0.0.1:7821";
 const BRIDGE_TIMEOUT_SECS: u64 = 5;
+const VOICE_TIMEOUT_SECS: u64 = 180;
 
 #[derive(Serialize)]
 struct HealthStatus {
@@ -23,6 +24,13 @@ fn health() -> HealthStatus {
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(BRIDGE_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("http client init failed: {e}"))
+}
+
+fn voice_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(VOICE_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("http client init failed: {e}"))
 }
@@ -172,7 +180,26 @@ async fn voice_stop(audio_base64: String, mime: Option<String>) -> Result<Value,
         "audio_base64": audio_base64,
         "mime": mime.unwrap_or_else(|| "audio/webm".to_string()),
     });
-    bridge_post("/voice/stop", body).await
+    let url = format!("{BRIDGE_BASE}/voice/stop");
+    let resp = voice_client()?
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("bridge unavailable: {e}"))?;
+    let status = resp.status();
+    let value = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("bridge decode error: {e}"))?;
+    if !status.is_success() {
+        let msg = value
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
+        return Err(format!("/voice/stop failed: HTTP {status} - {msg}"));
+    }
+    Ok(value)
 }
 
 #[tauri::command]
@@ -201,6 +228,28 @@ async fn voice_enable(enabled: bool) -> Result<Value, String> {
     bridge_post("/voice/enable", serde_json::json!({ "enabled": enabled })).await
 }
 
+#[tauri::command]
+async fn browser_context() -> Result<Value, String> {
+    bridge_get("/browser/context").await
+}
+
+#[tauri::command]
+async fn browser_snapshot(url: String, title: Option<String>, text: Option<String>) -> Result<Value, String> {
+    let mut body = serde_json::json!({ "url": url });
+    if let Some(t) = title {
+        body["title"] = Value::String(t);
+    }
+    if let Some(t) = text {
+        body["text"] = Value::String(t);
+    }
+    bridge_post("/browser/snapshot", body).await
+}
+
+#[tauri::command]
+async fn browser_clear() -> Result<Value, String> {
+    bridge_post("/browser/clear", serde_json::json!({})).await
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -222,6 +271,9 @@ fn main() {
             voice_discard,
             voice_reset,
             voice_enable,
+            browser_context,
+            browser_snapshot,
+            browser_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Jarvis HUD");
