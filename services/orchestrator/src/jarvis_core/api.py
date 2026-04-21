@@ -9,6 +9,7 @@ from .memory import MemoryStore
 from .models import ActionProposal
 from .policy import PolicyEngine
 from .supervisor import SupervisorRuntime
+from .voice import VoiceSession
 
 
 class LocalSupervisorAPI:
@@ -18,12 +19,21 @@ class LocalSupervisorAPI:
         root = Path(root)
         config_path = root / "configs" / "policy.default.json"
         runtime_path = root / "runtime"
+        sandbox_path = runtime_path / "sandbox"
 
         self.event_log = SignedEventLog(runtime_path / "events.jsonl", secret="jarvis-local-dev-secret")
         self.memory = MemoryStore(runtime_path / "memory")
         self.policy = PolicyEngine(config_path)
-        self.gateway = ActionGateway(self.policy, self.event_log)
+        self.gateway = ActionGateway(
+            self.policy,
+            self.event_log,
+            workspace_root=root,
+            sandbox_root=sandbox_path,
+        )
         self.supervisor = SupervisorRuntime(self.gateway, self.memory, self.event_log)
+        # Voice session is off-by-state (idle) and requires explicit start().
+        # No microphone access happens here; the HUD is the only recorder.
+        self.voice = VoiceSession()
 
     async def submit_voice_or_text_task(self, objective: str, source: str = "text", context: Optional[Dict[str, object]] = None):
         return await self.supervisor.submit_task(objective=objective, source=source, context=context)

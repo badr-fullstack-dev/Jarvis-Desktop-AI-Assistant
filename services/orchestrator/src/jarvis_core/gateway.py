@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional
 
 from .capabilities import ApplicationCapability, BrowserCapability, CapabilityAdapter, FilesystemCapability
 from .event_log import SignedEventLog
@@ -23,10 +24,24 @@ class ActionGateway:
         policy_engine: PolicyEngine,
         event_log: SignedEventLog,
         adapters: Iterable[CapabilityAdapter] | None = None,
+        *,
+        workspace_root: Optional[Path] = None,
+        sandbox_root: Optional[Path] = None,
     ) -> None:
         self.policy_engine = policy_engine
         self.event_log = event_log
-        self.adapters = list(adapters or [BrowserCapability(), FilesystemCapability(), ApplicationCapability()])
+        if adapters is None:
+            read_roots: List[Path] = []
+            if workspace_root is not None:
+                read_roots.append(Path(workspace_root))
+            if sandbox_root is not None:
+                Path(sandbox_root).mkdir(parents=True, exist_ok=True)
+            adapters = [
+                BrowserCapability(sandbox_root=sandbox_root),
+                FilesystemCapability(sandbox_root=sandbox_root, read_roots=read_roots),
+                ApplicationCapability(),
+            ]
+        self.adapters = list(adapters)
 
     def propose_action(self, proposal: ActionProposal) -> ProposedAction:
         decision = self.policy_engine.evaluate(proposal)

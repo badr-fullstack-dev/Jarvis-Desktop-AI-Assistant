@@ -48,6 +48,12 @@
         "fs.read"
       ]
     },
+    "filesystem.list": {
+      "tier": 0,
+      "scopes": [
+        "fs.read"
+      ]
+    },
     "filesystem.search": {
       "tier": 0,
       "scopes": [
@@ -67,6 +73,12 @@
       ]
     },
     "app.launch": {
+      "tier": 1,
+      "scopes": [
+        "app.launch"
+      ]
+    },
+    "app.focus": {
       "tier": 1,
       "scopes": [
         "app.launch"

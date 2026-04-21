@@ -31,6 +31,28 @@ export interface TraceItem {
   summary: string;
 }
 
+export interface ActionResultView {
+  actionId: string;
+  capability: string;
+  status: string;
+  summary: string;
+  output: Record<string, unknown>;
+  verification: Record<string, unknown>;
+}
+
+export type VoiceSessionState = "idle" | "recording" | "transcribing" | "ready" | "error";
+
+export interface VoiceSnapshot {
+  state: VoiceSessionState;
+  enabled: boolean;
+  transcript: string | null;
+  error: string | null;
+  provider: string;
+  lastAudioBytes: number;
+  lastMime: string | null;
+  updatedAt: string;
+}
+
 export interface HudState {
   mode: string;
   task: string;
@@ -39,5 +61,16 @@ export interface HudState {
   approvals: ApprovalCard[];
   memory: MemoryCandidate[];
   trace: TraceItem[];
+  latestResult?: ActionResultView | null;
+  currentTaskId?: string | null;
+  voice?: VoiceSnapshot;
 }
+
+export type StructuredCapability =
+  | "browser.navigate"
+  | "browser.read_page"
+  | "filesystem.read"
+  | "filesystem.list"
+  | "filesystem.write"
+  | "app.launch";
 

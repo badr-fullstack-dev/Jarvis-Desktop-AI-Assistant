@@ -251,6 +251,304 @@ button.secondary {
   border-bottom: 1px solid rgba(104, 240, 255, 0.12);
 }
 
+.degraded-banner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  align-items: center;
+  margin-bottom: 1.25rem;
+  padding: 0.85rem 1.1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 123, 123, 0.45);
+  background: rgba(60, 16, 16, 0.55);
+  color: #ffdede;
+}
+
+.degraded-banner strong {
+  color: var(--danger);
+}
+
+.degraded-banner code {
+  background: rgba(0, 0, 0, 0.45);
+  padding: 0.1rem 0.45rem;
+  border-radius: 6px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+}
+
+.task-form {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(104, 240, 255, 0.16);
+  display: grid;
+  gap: 0.5rem;
+}
+
+.task-form label {
+  color: var(--muted);
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.task-form-row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.task-form input {
+  flex: 1;
+  background: rgba(5, 17, 28, 0.8);
+  border: 1px solid rgba(104, 240, 255, 0.28);
+  border-radius: 999px;
+  padding: 0.75rem 1rem;
+  color: var(--text);
+  font: inherit;
+}
+
+.task-form input:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+.task-form input:disabled,
+.task-form button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.form-error {
+  color: var(--danger);
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.empty-hint {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.panel-actions {
+  grid-column: span 2;
+}
+
+.action-form {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.action-form label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.action-form label.inline {
+  display: flex;
+  flex-direction: row;
+  gap: 0.5rem;
+  align-items: center;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.action-form input[type="text"],
+.action-form select,
+.action-form textarea {
+  background: rgba(5, 17, 28, 0.8);
+  border: 1px solid rgba(104, 240, 255, 0.28);
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  color: var(--text);
+  font: inherit;
+}
+
+.action-form textarea {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
+.action-form input:focus,
+.action-form select:focus,
+.action-form textarea:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+.outcome {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.7rem 0.9rem;
+  background: rgba(8, 27, 41, 0.95);
+  border: 1px solid rgba(104, 240, 255, 0.2);
+  border-radius: 12px;
+}
+
+.outcome small {
+  color: var(--muted);
+}
+
+.outcome-status {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  width: fit-content;
+}
+
+.outcome-executed { background: rgba(87, 242, 135, 0.18); color: var(--ok); }
+.outcome-awaiting_approval { background: rgba(255, 209, 102, 0.18); color: var(--gold); }
+.outcome-blocked { background: rgba(255, 123, 123, 0.22); color: var(--danger); }
+.outcome-failed { background: rgba(255, 123, 123, 0.22); color: var(--danger); }
+
+.latest-result {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(104, 240, 255, 0.16);
+}
+
+.latest-result pre {
+  background: rgba(3, 10, 16, 0.85);
+  padding: 0.7rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  overflow: auto;
+  max-height: 14rem;
+}
+
+.latest-result details {
+  margin-top: 0.5rem;
+}
+
+.latest-result summary {
+  cursor: pointer;
+  color: var(--cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.78rem;
+}
+
+.panel-voice {
+  grid-column: span 2;
+}
+
+.voice-state {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(104, 240, 255, 0.12);
+  color: var(--cyan);
+}
+
+.voice-state-recording { background: rgba(255, 123, 123, 0.22); color: var(--danger); }
+.voice-state-transcribing { background: rgba(255, 209, 102, 0.18); color: var(--gold); }
+.voice-state-ready { background: rgba(87, 242, 135, 0.18); color: var(--ok); }
+.voice-state-error { background: rgba(255, 123, 123, 0.22); color: var(--danger); }
+
+.voice-controls {
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.voice-controls label.inline {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.voice-hint {
+  color: var(--muted);
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+}
+
+.voice-hint code {
+  background: rgba(0, 0, 0, 0.35);
+  padding: 0.05rem 0.35rem;
+  border-radius: 6px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.8rem;
+}
+
+.voice-button-row {
+  display: flex;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+  flex-wrap: wrap;
+}
+
+.voice-ptt {
+  min-width: 220px;
+  padding: 0.9rem 1.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--cyan);
+  background: rgba(34, 199, 240, 0.15);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  user-select: none;
+}
+
+.voice-ptt[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.voice-ptt-live {
+  border-color: var(--danger);
+  background: rgba(255, 123, 123, 0.2);
+  color: #ffdede;
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 123, 123, 0.6); }
+  50%      { box-shadow: 0 0 0 10px rgba(255, 123, 123, 0); }
+}
+
+.voice-preview {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(104, 240, 255, 0.22);
+  border-radius: 14px;
+  background: rgba(5, 17, 28, 0.7);
+}
+
+.voice-preview label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.78rem;
+}
+
+.voice-preview textarea {
+  background: rgba(3, 10, 16, 0.85);
+  border: 1px solid rgba(104, 240, 255, 0.28);
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  color: var(--text);
+  font: inherit;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  resize: vertical;
+}
+
 @media (max-width: 980px) {
   .shell {
     padding: 1rem;
@@ -265,7 +563,8 @@ button.secondary {
     grid-template-columns: 1fr;
   }
 
-  .panel-task {
+  .panel-task,
+  .panel-voice {
     grid-column: span 1;
   }
 }
