@@ -1,0 +1,13 @@
+{
+  "name": "jarvis-assistant-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/hud"
+  ],
+  "scripts": {
+    "hud:dev": "npm --workspace apps/hud run dev",
+    "hud:build": "npm --workspace apps/hud run build"
+  }
+}
+

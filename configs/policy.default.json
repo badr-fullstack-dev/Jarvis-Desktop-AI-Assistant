@@ -1,0 +1,101 @@
+{
+  "version": "0.1.0",
+  "default_mode": "guarded_autonomy",
+  "risk_tiers": {
+    "tier_0": {
+      "description": "Safe reads, extraction, navigation, and non-destructive observation.",
+      "requires_approval": false,
+      "blocked": false
+    },
+    "tier_1": {
+      "description": "Low-risk writes that may proceed automatically when intent is high-confidence.",
+      "requires_approval": "conditional",
+      "blocked": false
+    },
+    "tier_2": {
+      "description": "Installs, settings changes, process control, external communication, and credential use.",
+      "requires_approval": true,
+      "blocked": false
+    },
+    "tier_3": {
+      "description": "Destructive or irreversible actions.",
+      "requires_approval": true,
+      "blocked": true
+    }
+  },
+  "capabilities": {
+    "browser.read_page": {
+      "tier": 0,
+      "scopes": [
+        "web.read"
+      ]
+    },
+    "browser.navigate": {
+      "tier": 0,
+      "scopes": [
+        "web.navigate"
+      ]
+    },
+    "browser.download_file": {
+      "tier": 2,
+      "scopes": [
+        "web.download"
+      ]
+    },
+    "filesystem.read": {
+      "tier": 0,
+      "scopes": [
+        "fs.read"
+      ]
+    },
+    "filesystem.search": {
+      "tier": 0,
+      "scopes": [
+        "fs.read"
+      ]
+    },
+    "filesystem.write": {
+      "tier": 1,
+      "scopes": [
+        "fs.write"
+      ]
+    },
+    "filesystem.move": {
+      "tier": 2,
+      "scopes": [
+        "fs.write"
+      ]
+    },
+    "app.launch": {
+      "tier": 1,
+      "scopes": [
+        "app.launch"
+      ]
+    },
+    "app.install": {
+      "tier": 2,
+      "scopes": [
+        "app.install"
+      ]
+    },
+    "shell.execute_template": {
+      "tier": 2,
+      "scopes": [
+        "shell.typed"
+      ]
+    },
+    "system.delete": {
+      "tier": 3,
+      "scopes": [
+        "system.admin"
+      ]
+    }
+  },
+  "blocked_patterns": [
+    "format disk",
+    "disable antivirus",
+    "delete system32",
+    "download and run from unknown source"
+  ]
+}
+

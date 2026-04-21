@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "jarvis/memory-item",
+  "type": "object",
+  "required": [
+    "memory_id",
+    "kind",
+    "summary",
+    "evidence",
+    "trust_score",
+    "status",
+    "created_at"
+  ],
+  "properties": {
+    "memory_id": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "profile",
+        "operational",
+        "lesson",
+        "tool"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "details": {
+      "type": "object"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "trust_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "status": {
+      "enum": [
+        "candidate",
+        "approved",
+        "rejected",
+        "expired"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "review_at": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "string"
+    }
+  }
+}
+

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "jarvis/action-proposal",
+  "type": "object",
+  "required": [
+    "task_id",
+    "action_id",
+    "capability",
+    "intent",
+    "parameters",
+    "requested_by",
+    "evidence"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "action_id": {
+      "type": "string"
+    },
+    "capability": {
+      "type": "string"
+    },
+    "intent": {
+      "type": "string"
+    },
+    "parameters": {
+      "type": "object"
+    },
+    "requested_by": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "dry_run": {
+      "type": "boolean"
+    }
+  }
+}
+

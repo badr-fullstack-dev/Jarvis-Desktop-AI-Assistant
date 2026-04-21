@@ -1,0 +1,11 @@
+[package]
+name = "security-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Policy and audit primitives for guarded assistant native services"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+
