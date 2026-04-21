@@ -240,6 +240,12 @@ class DeterministicPlanner:
         for rule in (
             self._rule_current_page_query,
             self._rule_summarize,
+            self._rule_clipboard_read,
+            self._rule_clipboard_write,
+            self._rule_notify,
+            self._rule_foreground_window,
+            self._rule_screenshot,
+            self._rule_focus_app,
             self._rule_write_file,
             self._rule_list_directory,
             self._rule_read_page_or_file,
@@ -607,6 +613,215 @@ class DeterministicPlanner:
                 "Include a scheme (https://…) or use an allowlisted app name."
             ),
             matched_rule="open.unknown_target",
+        )
+
+    # ------------------------------------------------------------------
+    # Desktop rules
+    # ------------------------------------------------------------------
+
+    def _rule_clipboard_read(self, text: str, lower: str) -> Optional[PlanResult]:
+        # "what is in my clipboard", "read my clipboard", "show clipboard",
+        # "what's in the clipboard", "paste my clipboard"
+        patterns = [
+            r"^\s*what(?:'s| is)\s+(?:in\s+)?(?:my|the)\s+clipboard\s*\??\s*$",
+            r"^\s*(?:read|show|display|paste|get)\s+(?:my|the)\s+clipboard\s*$",
+            r"^\s*(?:read|show)\s+clipboard\s*$",
+            r"^\s*clipboard\s*\??\s*$",
+        ]
+        for pat in patterns:
+            if re.match(pat, text, re.IGNORECASE):
+                return PlanResult(
+                    status=MAPPED,
+                    original_text=text,
+                    capability="desktop.clipboard_read",
+                    parameters={},
+                    confidence=0.95,
+                    rationale="Matched clipboard-query phrasing → desktop.clipboard_read.",
+                    matched_rule="desktop.clipboard_read",
+                )
+        return None
+
+    def _rule_clipboard_write(self, text: str, lower: str) -> Optional[PlanResult]:
+        # "copy <text> to clipboard" / "copy <text> to the clipboard"
+        # "put <text> on clipboard" / "set clipboard to <text>"
+        m = re.match(
+            r"^\s*(?:copy|put)\s+(.+?)\s+(?:to|on|into)\s+(?:the\s+|my\s+)?clipboard\s*$",
+            text, re.IGNORECASE,
+        )
+        if not m:
+            m = re.match(
+                r"^\s*set\s+(?:the\s+|my\s+)?clipboard\s+to\s+(.+?)\s*$",
+                text, re.IGNORECASE,
+            )
+        if not m:
+            return None
+        content = m.group(1).strip()
+        if len(content) >= 2 and content[0] == content[-1] and content[0] in ("'", '"'):
+            content = content[1:-1]
+        if not content:
+            return PlanResult(
+                status=CLARIFICATION_NEEDED,
+                original_text=text,
+                ambiguity="Clipboard content is empty after stripping quotes.",
+                matched_rule="desktop.clipboard_write.empty",
+            )
+        return PlanResult(
+            status=MAPPED,
+            original_text=text,
+            capability="desktop.clipboard_write",
+            parameters={"text": content},
+            confidence=0.9,
+            rationale=f"Matched 'copy <text> to clipboard' → desktop.clipboard_write ({len(content)} chars).",
+            matched_rule="desktop.clipboard_write",
+        )
+
+    def _rule_notify(self, text: str, lower: str) -> Optional[PlanResult]:
+        # "notify me <message>" / "send me a notification saying <message>"
+        # "send a notification saying <message>" / "show notification <message>"
+        patterns = [
+            (r"^\s*(?:send|give|show)\s+(?:me\s+)?(?:a\s+)?notification\s+"
+             r"(?:saying|that\s+says|with)\s+(.+?)\s*$", "notify.say"),
+            (r"^\s*notify\s+(?:me\s+)?(?:saying\s+|that\s+|with\s+)?(.+?)\s*$", "notify.me"),
+            (r"^\s*show\s+(?:a\s+)?notification\s+(.+?)\s*$", "notify.show"),
+        ]
+        for pat, rule_id in patterns:
+            m = re.match(pat, text, re.IGNORECASE)
+            if not m:
+                continue
+            message = m.group(1).strip()
+            if len(message) >= 2 and message[0] == message[-1] and message[0] in ("'", '"'):
+                message = message[1:-1]
+            if not message:
+                return PlanResult(
+                    status=CLARIFICATION_NEEDED,
+                    original_text=text,
+                    ambiguity="Notification message is empty.",
+                    matched_rule=f"{rule_id}.empty",
+                )
+            return PlanResult(
+                status=MAPPED,
+                original_text=text,
+                capability="desktop.notify",
+                parameters={"title": "Jarvis", "message": message},
+                confidence=0.9,
+                rationale=f"Matched notification phrasing → desktop.notify ({len(message)} chars).",
+                matched_rule=rule_id,
+            )
+        return None
+
+    def _rule_foreground_window(self, text: str, lower: str) -> Optional[PlanResult]:
+        # "show my current window", "what window is open", "what's my foreground window",
+        # "current window", "what am I looking at"
+        patterns = [
+            r"^\s*(?:show|tell\s+me|what(?:'s| is))\s+(?:my\s+|the\s+)?"
+            r"(?:current|foreground|active)\s+window\s*\??\s*$",
+            r"^\s*what\s+window\s+(?:is\s+)?(?:open|active|in\s+front)\s*\??\s*$",
+            r"^\s*(?:current|foreground|active)\s+window\s*\??\s*$",
+            r"^\s*what\s+am\s+i\s+looking\s+at\s*\??\s*$",
+        ]
+        for pat in patterns:
+            if re.match(pat, text, re.IGNORECASE):
+                return PlanResult(
+                    status=MAPPED,
+                    original_text=text,
+                    capability="desktop.foreground_window",
+                    parameters={},
+                    confidence=0.9,
+                    rationale="Matched foreground-window query → desktop.foreground_window.",
+                    matched_rule="desktop.foreground_window",
+                )
+        return None
+
+    def _rule_screenshot(self, text: str, lower: str) -> Optional[PlanResult]:
+        """Screenshot phrasings → desktop.screenshot_foreground / _full.
+
+        Defaults to the foreground window when the phrasing implies "my
+        window" or is otherwise ambiguous. Only maps to the full virtual
+        screen when the user explicitly says so (e.g. "full screen",
+        "entire desktop", "whole screen").
+        """
+        foreground_patterns = [
+            r"^\s*(?:take|capture|grab)\s+(?:a\s+)?screenshot\s+of\s+(?:my\s+|the\s+)?"
+            r"(?:current\s+|active\s+|foreground\s+)?window\s*\??\s*$",
+            r"^\s*screenshot\s+(?:my\s+|the\s+)?(?:current\s+|active\s+|foreground\s+)?"
+            r"window\s*\??\s*$",
+            r"^\s*(?:take|capture|grab)\s+(?:a\s+)?(?:window\s+)?screenshot\s*\??\s*$",
+            r"^\s*screenshot\s*\??\s*$",
+            r"^\s*what(?:'s| is)\s+on\s+(?:my\s+|the\s+)?(?:screen|window)\s*\??\s*$",
+            r"^\s*show\s+(?:me\s+)?(?:my\s+|the\s+)?(?:current\s+)?screen\s*\??\s*$",
+        ]
+        full_patterns = [
+            r"^\s*(?:take|capture|grab)\s+(?:a\s+)?"
+            r"(?:full\s+screen|entire\s+(?:screen|desktop)|whole\s+(?:screen|desktop))"
+            r"\s+screenshot\s*\??\s*$",
+            r"^\s*(?:take|capture|grab)\s+(?:a\s+)?screenshot\s+of\s+(?:my\s+|the\s+)?"
+            r"(?:full(?:\s+screen)?|entire\s+(?:screen|desktop)|whole\s+(?:screen|desktop)|desktop)\s*\??\s*$",
+            r"^\s*(?:capture|screenshot)\s+(?:my\s+|the\s+)?"
+            r"(?:full\s+screen|entire\s+(?:screen|desktop)|whole\s+(?:screen|desktop)|desktop)\s*\??\s*$",
+            r"^\s*full(?:\s+screen)?\s+screenshot\s*\??\s*$",
+        ]
+        for pat in full_patterns:
+            if re.match(pat, text, re.IGNORECASE):
+                return PlanResult(
+                    status=MAPPED,
+                    original_text=text,
+                    capability="desktop.screenshot_full",
+                    parameters={},
+                    confidence=0.9,
+                    rationale="Matched full-screen screenshot phrasing → desktop.screenshot_full.",
+                    matched_rule="desktop.screenshot_full",
+                )
+        for pat in foreground_patterns:
+            if re.match(pat, text, re.IGNORECASE):
+                return PlanResult(
+                    status=MAPPED,
+                    original_text=text,
+                    capability="desktop.screenshot_foreground",
+                    parameters={},
+                    confidence=0.9,
+                    rationale="Matched foreground-window screenshot phrasing → desktop.screenshot_foreground.",
+                    matched_rule="desktop.screenshot_foreground",
+                )
+        return None
+
+    def _rule_focus_app(self, text: str, lower: str) -> Optional[PlanResult]:
+        # "focus notepad", "bring notepad to front", "switch to notepad",
+        # "activate notepad"
+        m = re.match(
+            r"^\s*(?:focus(?:\s+on)?|switch\s+to|activate|bring)\s+"
+            r"(?:the\s+)?(.+?)(?:\s+to\s+(?:the\s+)?front)?\s*$",
+            text, re.IGNORECASE,
+        )
+        if not m:
+            return None
+        target_raw = m.group(1).strip().rstrip(".,;")
+        target_lower = target_raw.lower()
+        app = _app_alias(target_lower)
+        if app is not None:
+            return PlanResult(
+                status=MAPPED,
+                original_text=text,
+                capability="app.focus",
+                parameters={"name": app},
+                confidence=0.95,
+                rationale=f"Matched 'focus <allowlisted app>' → app.focus ({app}).",
+                matched_rule="desktop.focus.app",
+            )
+        if target_lower in _VAGUE_TARGETS:
+            return PlanResult(
+                status=CLARIFICATION_NEEDED,
+                original_text=text,
+                ambiguity=f"'focus {target_raw}' — name the app explicitly.",
+                matched_rule="desktop.focus.deictic",
+            )
+        return PlanResult(
+            status=CLARIFICATION_NEEDED,
+            original_text=text,
+            ambiguity=(
+                f"'focus {target_raw}' — {target_raw!r} is not an allowlisted app "
+                f"({sorted(APP_ALLOWLIST)})."
+            ),
+            matched_rule="desktop.focus.unknown_target",
         )
 
     def _rule_navigate_verbs(self, text: str, lower: str) -> Optional[PlanResult]:

@@ -177,6 +177,106 @@ class PlannerAmbiguityTests(unittest.TestCase):
         self.assertEqual(r.matched_rule, "fallthrough")
 
 
+class PlannerDesktopTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.planner = DeterministicPlanner()
+
+    def test_clipboard_query_maps_to_read(self) -> None:
+        for phrase in [
+            "what is in my clipboard?",
+            "what's in the clipboard",
+            "read my clipboard",
+            "show clipboard",
+            "paste my clipboard",
+        ]:
+            r = self.planner.plan(phrase)
+            self.assertEqual(r.status, MAPPED, phrase)
+            self.assertEqual(r.capability, "desktop.clipboard_read")
+
+    def test_copy_to_clipboard_maps_to_write(self) -> None:
+        r = self.planner.plan("copy hello world to clipboard")
+        self.assertEqual(r.status, MAPPED)
+        self.assertEqual(r.capability, "desktop.clipboard_write")
+        self.assertEqual(r.parameters, {"text": "hello world"})
+
+    def test_copy_to_clipboard_strips_quotes(self) -> None:
+        r = self.planner.plan("copy 'secret token' to clipboard")
+        self.assertEqual(r.status, MAPPED)
+        self.assertEqual(r.parameters["text"], "secret token")
+
+    def test_notify_maps(self) -> None:
+        r = self.planner.plan("send me a notification saying hello")
+        self.assertEqual(r.status, MAPPED)
+        self.assertEqual(r.capability, "desktop.notify")
+        self.assertEqual(r.parameters["message"], "hello")
+
+    def test_notify_shorthand(self) -> None:
+        r = self.planner.plan("notify me hello jarvis")
+        self.assertEqual(r.status, MAPPED)
+        self.assertEqual(r.capability, "desktop.notify")
+        self.assertIn("hello", r.parameters["message"])
+
+    def test_foreground_window_query_maps(self) -> None:
+        for phrase in [
+            "show my current window",
+            "what is the foreground window",
+            "what window is open?",
+            "current window",
+        ]:
+            r = self.planner.plan(phrase)
+            self.assertEqual(r.status, MAPPED, phrase)
+            self.assertEqual(r.capability, "desktop.foreground_window")
+
+    def test_focus_allowlisted_app_maps(self) -> None:
+        r = self.planner.plan("focus notepad")
+        self.assertEqual(r.status, MAPPED)
+        self.assertEqual(r.capability, "app.focus")
+        self.assertEqual(r.parameters, {"name": "notepad"})
+
+    def test_switch_to_calculator_maps(self) -> None:
+        r = self.planner.plan("switch to calculator")
+        self.assertEqual(r.status, MAPPED)
+        self.assertEqual(r.capability, "app.focus")
+        self.assertEqual(r.parameters["name"], "calculator")
+
+    def test_focus_unknown_app_is_clarification(self) -> None:
+        r = self.planner.plan("focus slack")
+        self.assertEqual(r.status, CLARIFICATION_NEEDED)
+        self.assertEqual(r.matched_rule, "desktop.focus.unknown_target")
+
+    def test_focus_deictic_is_clarification(self) -> None:
+        r = self.planner.plan("focus it")
+        self.assertEqual(r.status, CLARIFICATION_NEEDED)
+
+    def test_screenshot_foreground_variants(self) -> None:
+        for phrase in [
+            "take a screenshot",
+            "screenshot",
+            "screenshot my window",
+            "take a screenshot of my current window",
+            "capture a screenshot of the active window",
+            "what is on my screen",
+            "what's on my screen?",
+            "show me my current screen",
+        ]:
+            r = self.planner.plan(phrase)
+            self.assertEqual(r.status, MAPPED, phrase)
+            self.assertEqual(r.capability, "desktop.screenshot_foreground", phrase)
+
+    def test_screenshot_full_variants(self) -> None:
+        for phrase in [
+            "take a full screen screenshot",
+            "capture the entire desktop",
+            "screenshot the whole screen",
+            "full screen screenshot",
+            "take a screenshot of the entire screen",
+            "capture my desktop",
+        ]:
+            r = self.planner.plan(phrase)
+            self.assertEqual(r.status, MAPPED, phrase)
+            self.assertEqual(r.capability, "desktop.screenshot_full", phrase)
+
+
 class PlanResultSerializationTests(unittest.TestCase):
     def test_to_dict_shape(self) -> None:
         r = DeterministicPlanner().plan("open https://example.com")

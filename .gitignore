@@ -13,4 +13,5 @@ Thumbs.db
 *.log
 runtime/
 apps/hud/src-tauri/target/
-
+tasks/lessons.md 
+CLAUDE.md

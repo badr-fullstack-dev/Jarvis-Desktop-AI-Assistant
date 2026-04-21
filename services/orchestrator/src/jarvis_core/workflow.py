@@ -164,6 +164,8 @@ class WorkflowPlanner:
             self._open_and_summarize,
             self._read_then_summarize,
             self._write_then_read,
+            self._open_and_focus,
+            self._copy_and_notify,
         ):
             plan = rule(t)
             if plan is not None:
@@ -273,6 +275,77 @@ class WorkflowPlanner:
                 WorkflowStep(index=1, capability="filesystem.read",
                              parameters={"path": path},
                              intent=f"read back {path} for verification"),
+            ],
+        )
+
+
+    # ------------------------------------------------------------------
+    # Desktop patterns
+    # ------------------------------------------------------------------
+
+    # Same allowlist mirror as the planner — name-only; the adapter
+    # still enforces the real check.
+    _APP_ALIASES: Dict[str, str] = {
+        "notepad": "notepad", "calculator": "calculator", "calc": "calc",
+        "explorer": "explorer", "file explorer": "explorer", "files": "explorer",
+        "paint": "mspaint", "mspaint": "mspaint", "ms paint": "mspaint",
+    }
+
+    def _open_and_focus(self, text: str) -> Optional[WorkflowPlan]:
+        # "open notepad then focus it" / "launch notepad and then focus it"
+        m = re.match(
+            r"^(?:open|launch|start|run)\s+(?:the\s+)?([a-z][a-z \-]*?)\s+"
+            r"(?:then|and(?:\s+then)?)\s+focus(?:\s+it)?$",
+            text, re.IGNORECASE,
+        )
+        if not m:
+            return None
+        name_raw = m.group(1).strip().lower()
+        app = self._APP_ALIASES.get(name_raw)
+        if app is None:
+            return None
+        return WorkflowPlan(
+            pattern_id="wf.open_and_focus",
+            rationale=f"open {app} then focus → app.launch then app.focus",
+            steps=[
+                WorkflowStep(index=0, capability="app.launch",
+                             parameters={"name": app},
+                             intent=f"launch {app}"),
+                WorkflowStep(index=1, capability="app.focus",
+                             parameters={"name": app},
+                             intent=f"focus {app}"),
+            ],
+        )
+
+    def _copy_and_notify(self, text: str) -> Optional[WorkflowPlan]:
+        # "copy <text> to clipboard then notify me" /
+        # "copy <text> to clipboard and notify me saying <msg>"
+        m = re.match(
+            r"^(?:copy|put)\s+(.+?)\s+(?:to|on|into)\s+(?:the\s+|my\s+)?clipboard\s+"
+            r"(?:then|and(?:\s+then)?)\s+notify(?:\s+me)?"
+            r"(?:\s+(?:saying|with|that\s+says)\s+(.+?))?$",
+            text, re.IGNORECASE,
+        )
+        if not m:
+            return None
+        content = m.group(1).strip()
+        if len(content) >= 2 and content[0] == content[-1] and content[0] in ("'", '"'):
+            content = content[1:-1]
+        message = (m.group(2) or "Copied to clipboard.").strip()
+        if len(message) >= 2 and message[0] == message[-1] and message[0] in ("'", '"'):
+            message = message[1:-1]
+        if not content:
+            return None
+        return WorkflowPlan(
+            pattern_id="wf.copy_and_notify",
+            rationale="copy <text> then notify → desktop.clipboard_write then desktop.notify",
+            steps=[
+                WorkflowStep(index=0, capability="desktop.clipboard_write",
+                             parameters={"text": content},
+                             intent=f"copy {len(content)} chars to clipboard"),
+                WorkflowStep(index=1, capability="desktop.notify",
+                             parameters={"title": "Jarvis", "message": message},
+                             intent=f"notify: {message[:60]}"),
             ],
         )
 

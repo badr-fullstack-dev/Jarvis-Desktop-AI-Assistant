@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .browser_context import BrowserContext
-from .capabilities import ApplicationCapability, BrowserCapability, FilesystemCapability
+from .capabilities import (
+    ApplicationCapability,
+    BrowserCapability,
+    DesktopCapability,
+    FilesystemCapability,
+)
 from .event_log import SignedEventLog
 from .gateway import ActionGateway
 from .memory import MemoryStore
@@ -25,6 +30,8 @@ class LocalSupervisorAPI:
         config_path = root / "configs" / "policy.default.json"
         runtime_path = root / "runtime"
         sandbox_path = runtime_path / "sandbox"
+        screenshots_path = runtime_path / "screenshots"
+        self.screenshots_root = screenshots_path
 
         self.event_log = SignedEventLog(runtime_path / "events.jsonl", secret="jarvis-local-dev-secret")
         self.memory = MemoryStore(runtime_path / "memory")
@@ -42,6 +49,7 @@ class LocalSupervisorAPI:
                 FilesystemCapability(sandbox_root=sandbox_path,
                                      read_roots=[root]),
                 ApplicationCapability(),
+                DesktopCapability(screenshots_dir=screenshots_path),
             ],
             workspace_root=root,
             sandbox_root=sandbox_path,

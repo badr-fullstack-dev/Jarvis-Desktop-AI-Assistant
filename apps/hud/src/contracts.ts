@@ -123,6 +123,85 @@ export interface WorkflowView {
   steps: WorkflowStepView[];
 }
 
+export interface DesktopClipboardView {
+  capability: "desktop.clipboard_read";
+  status: string;
+  summary: string;
+  text: string | null;
+  truncated: boolean;
+  byteCount: number;
+  updatedAt: string;
+}
+
+export interface DesktopClipboardWriteView {
+  capability: "desktop.clipboard_write";
+  status: string;
+  summary: string;
+  byteCount: number;
+  updatedAt: string;
+}
+
+export interface DesktopNotificationView {
+  capability: "desktop.notify";
+  status: string;
+  summary: string;
+  title: string | null;
+  message: string | null;
+  channel: string | null;
+  updatedAt: string;
+}
+
+export interface DesktopWindowInfo {
+  hwnd: number;
+  title: string;
+  pid: number;
+  exe: string | null;
+}
+
+export interface DesktopForegroundView {
+  capability: "desktop.foreground_window";
+  status: string;
+  summary: string;
+  window: DesktopWindowInfo | null;
+  updatedAt: string;
+}
+
+export interface DesktopFocusView {
+  capability: "app.focus";
+  status: string;
+  summary: string;
+  name: string | null;
+  focused: boolean;
+  hwnd: number | null;
+  pid: number | null;
+  error: string | null;
+  updatedAt: string;
+}
+
+export interface DesktopScreenshotView {
+  capability: "desktop.screenshot_foreground" | "desktop.screenshot_full";
+  status: string;
+  summary: string;
+  mode: "foreground" | "full";
+  name: string | null;
+  path: string | null;
+  width: number;
+  height: number;
+  byteCount: number;
+  updatedAt: string;
+}
+
+export interface DesktopView {
+  clipboard: DesktopClipboardView | null;
+  clipboardWrite: DesktopClipboardWriteView | null;
+  notification: DesktopNotificationView | null;
+  foregroundWindow: DesktopForegroundView | null;
+  focus: DesktopFocusView | null;
+  screenshotForeground: DesktopScreenshotView | null;
+  screenshotFull: DesktopScreenshotView | null;
+  latestScreenshot: DesktopScreenshotView | null;
+}
+
 export interface HudState {
   mode: string;
   task: string;
@@ -138,6 +217,7 @@ export interface HudState {
   voice?: VoiceSnapshot;
   browserContext?: BrowserContextView | null;
   workflow?: WorkflowView | null;
+  desktop?: DesktopView | null;
 }
 
 export type StructuredCapability =
@@ -148,5 +228,12 @@ export type StructuredCapability =
   | "filesystem.read"
   | "filesystem.list"
   | "filesystem.write"
-  | "app.launch";
+  | "app.launch"
+  | "app.focus"
+  | "desktop.clipboard_read"
+  | "desktop.clipboard_write"
+  | "desktop.notify"
+  | "desktop.foreground_window"
+  | "desktop.screenshot_foreground"
+  | "desktop.screenshot_full";
 

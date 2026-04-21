@@ -108,6 +108,42 @@
         "shell.typed"
       ]
     },
+    "desktop.clipboard_read": {
+      "tier": 0,
+      "scopes": [
+        "desktop.clipboard"
+      ]
+    },
+    "desktop.clipboard_write": {
+      "tier": 1,
+      "scopes": [
+        "desktop.clipboard"
+      ]
+    },
+    "desktop.notify": {
+      "tier": 1,
+      "scopes": [
+        "desktop.notify"
+      ]
+    },
+    "desktop.foreground_window": {
+      "tier": 0,
+      "scopes": [
+        "desktop.window_read"
+      ]
+    },
+    "desktop.screenshot_foreground": {
+      "tier": 0,
+      "scopes": [
+        "desktop.screen_read"
+      ]
+    },
+    "desktop.screenshot_full": {
+      "tier": 0,
+      "scopes": [
+        "desktop.screen_read"
+      ]
+    },
     "system.delete": {
       "tier": 3,
       "scopes": [

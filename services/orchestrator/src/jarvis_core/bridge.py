@@ -13,9 +13,11 @@ import asyncio
 import base64
 import binascii
 import json
+import re
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -89,6 +91,96 @@ def _trace_summary(item: Dict[str, Any]) -> str:
     return item.get("summary", event)
 
 
+_DESKTOP_CAPS = {
+    "desktop.clipboard_read",
+    "desktop.clipboard_write",
+    "desktop.notify",
+    "desktop.foreground_window",
+    "desktop.screenshot_foreground",
+    "desktop.screenshot_full",
+    "app.focus",
+}
+
+# Screenshot filename regex — must match the shape produced by
+# DesktopCapability (``screenshot-<uuid>.png``) exactly. Anything else
+# is rejected by the bridge before we touch the filesystem.
+_SCREENSHOT_NAME_RE = re.compile(r"^screenshot-[A-Za-z0-9_-]+\.png$")
+
+
+def _build_desktop_view(supervisor: Any) -> Optional[Dict[str, Any]]:
+    """Collect the most recent result for each desktop-flavoured capability.
+
+    Surfaced in /hud-state so the HUD can show clipboard preview, last
+    foreground-window snapshot, last notification, and last focus result
+    without piggybacking on the generic latestResult card.
+    """
+    results = getattr(supervisor, "action_results", {}) or {}
+    if not results:
+        return None
+    seen: Dict[str, Dict[str, Any]] = {}
+    # Iterate newest-first so the first hit per capability wins.
+    for result in reversed(list(results.values())):
+        cap = result.proposal.capability
+        if cap not in _DESKTOP_CAPS or cap in seen:
+            continue
+        out = result.output or {}
+        entry: Dict[str, Any] = {
+            "capability": cap,
+            "status": result.status,
+            "summary": result.summary,
+            "updatedAt": getattr(result, "created_at", None) or "",
+        }
+        if cap == "desktop.clipboard_read":
+            entry["text"] = out.get("text")
+            entry["truncated"] = bool(out.get("truncated"))
+            entry["byteCount"] = int(out.get("byte_count") or 0)
+        elif cap == "desktop.clipboard_write":
+            entry["byteCount"] = int(out.get("byte_count") or 0)
+        elif cap == "desktop.notify":
+            entry["title"] = out.get("title")
+            entry["message"] = out.get("message")
+            entry["channel"] = out.get("channel")
+        elif cap == "desktop.foreground_window":
+            entry["window"] = out.get("window")
+        elif cap == "app.focus":
+            entry["name"] = out.get("name")
+            entry["focused"] = bool(out.get("focused"))
+            entry["hwnd"] = out.get("hwnd")
+            entry["pid"] = out.get("pid")
+            entry["error"] = out.get("error")
+        elif cap in ("desktop.screenshot_foreground", "desktop.screenshot_full"):
+            entry["mode"] = out.get("mode") or (
+                "foreground" if cap.endswith("foreground") else "full"
+            )
+            entry["name"] = out.get("name")
+            entry["path"] = out.get("path")
+            entry["width"] = int(out.get("width") or 0)
+            entry["height"] = int(out.get("height") or 0)
+            entry["byteCount"] = int(out.get("byte_count") or 0)
+        seen[cap] = entry
+    if not seen:
+        return None
+    # Pick the freshest screenshot between the two capabilities for a
+    # single "latest screenshot" card — iteration above was newest-first
+    # per capability, so the first of the two we saw is the newest.
+    latest_screenshot: Optional[Dict[str, Any]] = None
+    for result in reversed(list(results.values())):
+        cap = result.proposal.capability
+        if cap in ("desktop.screenshot_foreground", "desktop.screenshot_full"):
+            latest_screenshot = seen.get(cap)
+            break
+    return {
+        "clipboard": seen.get("desktop.clipboard_read"),
+        "clipboardWrite": seen.get("desktop.clipboard_write"),
+        "notification": seen.get("desktop.notify"),
+        "foregroundWindow": seen.get("desktop.foreground_window"),
+        "focus": seen.get("app.focus"),
+        "screenshotForeground": seen.get("desktop.screenshot_foreground"),
+        "screenshotFull": seen.get("desktop.screenshot_full"),
+        "latestScreenshot": latest_screenshot,
+    }
+
+
 def _derive_agents(task: Any) -> List[Dict[str, Any]]:
     """Map task status to the four fixed subagent cards."""
     if task is None:
@@ -128,6 +220,7 @@ def _build_hud_state() -> Dict[str, Any]:
                       "lastAudioBytes": 0, "lastMime": None, "updatedAt": ""},
             "browserContext": None,
             "workflow": None,
+            "desktop": None,
             "degraded": True,
             "degradedReason": "Orchestrator not initialised",
         }
@@ -212,6 +305,7 @@ def _build_hud_state() -> Dict[str, Any]:
         "voice": _api.voice.snapshot(),
         "browserContext": _api.browser_context.snapshot(),
         "workflow": workflow_view,
+        "desktop": _build_desktop_view(supervisor),
         "degraded": False,
     }
 
@@ -298,6 +392,9 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                 self._send_error_json(503, "Orchestrator not initialised")
                 return
             self._send_json({"items": _api.supervisor.list_pending_approvals()})
+        elif path.startswith("/screenshots/"):
+            self._handle_screenshot_get(path[len("/screenshots/"):])
+            return
         elif path.startswith("/actions/"):
             action_id = path[len("/actions/"):]
             if _api is None:
@@ -359,6 +456,57 @@ class _BridgeHandler(BaseHTTPRequestHandler):
 
         else:
             self._send_error_json(404, f"Unknown route: {path}")
+
+    # ------------------------------------------------------------------
+    # Screenshot file handler
+    # ------------------------------------------------------------------
+    def _handle_screenshot_get(self, raw_name: str) -> None:
+        """Serve a PNG from the configured screenshots root.
+
+        Security: the incoming name is matched against a strict regex
+        (``screenshot-<uuid>.png``) — no slashes, no ``..``, nothing that
+        could escape the directory. Then we resolve the final path and
+        require its parent to equal the configured root. Any mismatch
+        returns 404 rather than disclosing which guard tripped.
+        """
+        if _api is None:
+            self._send_error_json(503, "Orchestrator not initialised")
+            return
+        name = raw_name.strip()
+        # Strip any query string residue (shouldn't arrive here, but defensive).
+        if "?" in name:
+            name = name.split("?", 1)[0]
+        if not name or not _SCREENSHOT_NAME_RE.match(name):
+            self._send_error_json(404, "Not found")
+            return
+        root: Optional[Path] = getattr(_api, "screenshots_root", None)
+        if root is None:
+            self._send_error_json(404, "Not found")
+            return
+        try:
+            root_resolved = Path(root).resolve()
+            path = (root_resolved / name).resolve()
+        except OSError:
+            self._send_error_json(404, "Not found")
+            return
+        # Ensure the resolved path still lives directly under the root.
+        if path.parent != root_resolved or not path.is_file():
+            self._send_error_json(404, "Not found")
+            return
+        try:
+            data = path.read_bytes()
+        except OSError:
+            self._send_error_json(404, "Not found")
+            return
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
 
     # ------------------------------------------------------------------
     # Browser context handlers

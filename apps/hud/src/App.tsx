@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { HudState } from "./contracts";
 import { ActionPanel } from "./ActionPanel";
 import { BrowserPanel } from "./BrowserPanel";
+import { DesktopPanel } from "./DesktopPanel";
 import { PlanPanel } from "./PlanPanel";
 import { VoicePanel } from "./VoicePanel";
 import { WorkflowPanel } from "./WorkflowPanel";
@@ -301,6 +302,8 @@ export default function App() {
           degraded={degraded}
           onAfterAction={refresh}
         />
+
+        <DesktopPanel desktop={state.desktop ?? null} />
 
         <VoicePanel
           voice={state.voice}

@@ -123,8 +123,13 @@ through a typed adapter.
 | `filesystem.search`     | 0   | `fnmatch` glob walk (≤200 matches), scoped.                    |
 | `filesystem.write`      | 1   | Writes text (≤1 MB). **Destination must resolve inside sandbox_root.** |
 | `filesystem.move`       | 2   | Approval-gated. Source in read roots, destination in sandbox. |
-| `app.launch` / `app.focus` | 1 | Allowlisted launch (notepad, calc, explorer, mspaint) via `subprocess.Popen`. No arbitrary paths. |
+| `app.launch`            | 1   | Allowlisted launch (notepad, calc, explorer, mspaint) via `subprocess.Popen`. No arbitrary paths. |
+| `app.focus`             | 1   | Raises an already-running allowlisted app via `SetForegroundWindow`. Fails honestly when not running or Windows refuses. |
 | `app.install`           | 2   | Still intentionally unsupported — returns `failed: not_implemented` after approval. |
+| `desktop.clipboard_read`  | 0 | Reads `CF_UNICODETEXT` from the clipboard via `ctypes`/`user32`. 4 KB excerpt cap. |
+| `desktop.clipboard_write` | 1 | Writes UTF-16 text to the clipboard. 64 KB payload cap. |
+| `desktop.notify`          | 1 | Non-blocking dialog notification (`MessageBoxW`) on a daemon thread. |
+| `desktop.foreground_window` | 0 | Returns the current foreground window's title, PID, and exe path. |
 
 Scope roots are configured automatically by `LocalSupervisorAPI`:
 - **workspace_root** (passed to the API constructor) → read roots for `filesystem.*`.
@@ -181,7 +186,7 @@ python -m unittest discover -s services/orchestrator/tests -t services/orchestra
 ```
 
 This runs runtime + bridge + capability + action-loop + voice + planner
-+ browser-context + workflow tests (157 tests total in this checkpoint). The capability tests use a local
++ browser-context + workflow + desktop + screenshot tests (200 tests total in this checkpoint). The capability tests use a local
 loopback HTTPServer for browser tests and dry-run mode for
 `app.launch`, so no external network or GUI processes are started.
 Voice / STT tests inject deterministic providers, fake models, and
@@ -457,8 +462,8 @@ Use the prompts in `prompts/` to keep implementation staged:
 5. ~~Deterministic planner that converts typed / spoken requests into structured proposals through the existing gateway.~~ ✅ (v1; see *Deterministic planner* below)
 6. ~~Browser context awareness: last-read page state + 'read this page' / 'summarize this page' intents, no unsafe automation.~~ ✅ (v1; see *Browser context* below)
 7. ~~Bounded multi-step workflow orchestration — finite, inspectable sequences, each step still guarded.~~ ✅ (v1; see *Bounded workflows* below)
-8. Add a real browser-automation channel (CDP or WebView2) for in-page extraction and form interaction.
-9. Add `app.focus` via UIA so focus works on already-running processes.
+8. ~~Windows desktop control (clipboard, notifications, foreground window, real `app.focus`).~~ ✅ (v1; see *Windows desktop commands* below)
+9. Add a real browser-automation channel (CDP or WebView2) for in-page extraction and form interaction.
 8. ~~Swap the stub transcription provider for a real local provider (whisper.cpp or faster-whisper) — document privacy properties inline.~~ ✅ (v1; see *Transcription providers*)
 9. Integrate wake word behind an explicit, visible privacy mode — not before the verifier/replay harness is in place.
 10. Expand the verifier and replay/eval harnesses before increasing autonomy.
@@ -661,5 +666,172 @@ file watcher: it spawns `python -m jarvis_core` as a single child
 process, polls the `jarvis_core` package and `configs/` for `.py`
 changes, and terminates + respawns the child on edits. Dev-only;
 stdlib-only; exactly one child (never duplicate bridges). Forwarded
-args (`--port …`, `--root …`) go straight to the child.
+args (`--port …`, `--root …`) go straight to the child. `dev_watch`
+picks up the new `capabilities/desktop.py` module automatically.
+
+## Windows desktop commands (v1)
+
+The assistant now has a small Windows-first desktop layer. It uses
+`ctypes` against stable Win32 APIs (`user32` / `kernel32`) — **no new
+pip dependencies**, no raw shell, no mouse or keyboard automation.
+Every capability still flows through ActionGateway + PolicyEngine and
+writes to the signed audit log.
+
+### Supported capabilities
+
+| Capability                 | Tier | Scope                  | What it does                                                        |
+|----------------------------|------|------------------------|---------------------------------------------------------------------|
+| `desktop.clipboard_read`   | 0    | `desktop.clipboard`    | Reads `CF_UNICODETEXT` from the system clipboard. Truncated at 4 KB.|
+| `desktop.clipboard_write`  | 1    | `desktop.clipboard`    | Writes a UTF-16 string to the clipboard. Rejects payloads > 64 KB.  |
+| `desktop.notify`           | 1    | `desktop.notify`       | Shows a dialog notification (`MessageBoxW`) from a daemon thread.   |
+| `desktop.foreground_window`| 0    | `desktop.window_read`  | Returns the current foreground window's title, PID, and exe path.   |
+| `app.focus`                | 1    | `app.launch`           | Raises an **already-running** allowlisted app to the foreground.    |
+
+### Supported phrasings (planner rules)
+
+| You say                                         | Maps to                     |
+|-------------------------------------------------|-----------------------------|
+| "what is in my clipboard?", "read my clipboard" | `desktop.clipboard_read`    |
+| "copy hello world to clipboard"                 | `desktop.clipboard_write`   |
+| "send me a notification saying hello"           | `desktop.notify`            |
+| "notify me hello jarvis"                        | `desktop.notify`            |
+| "show my current window", "what window is open" | `desktop.foreground_window` |
+| "focus notepad", "switch to calculator"         | `app.focus`                 |
+
+### New workflow patterns
+
+* `wf.open_and_focus` — "open notepad then focus it"
+  → `app.launch` ▸ `app.focus`.
+* `wf.copy_and_notify` — "copy hello to clipboard then notify me saying done"
+  → `desktop.clipboard_write` ▸ `desktop.notify`.
+
+Both patterns live in `workflow.py` alongside the browser/filesystem
+patterns and pause on any approval the same way.
+
+### HUD surface
+
+`DesktopPanel` renders the most recent result for each desktop-flavoured
+capability — clipboard read preview (with truncation flag), last clipboard
+write byte count, last notification, last foreground-window snapshot, and
+last focus attempt (success vs `set_foreground_refused`). Everything is
+derived server-side from the supervisor's action results and shipped in
+`/hud-state.desktop`.
+
+### How to test each capability
+
+Start the bridge, then either submit a task from the HUD or `curl` the
+bridge directly.
+
+```
+python -m jarvis_core.dev_watch     # optional — auto-restart on edits
+```
+
+* **Clipboard write/read round-trip** (from the HUD task input):
+  1. "copy hello world to clipboard"  → `desktop.clipboard_write` runs at tier 1.
+  2. "what is in my clipboard?"       → `desktop.clipboard_read` returns the text.
+* **Notification**: "notify me hello" — a `MessageBoxW` dialog appears
+  in the foreground; the HUD's `Desktop State` panel records it.
+* **Foreground window**: "show my current window" — HUD shows title,
+  PID, and exe path of whatever is in front.
+* **Focus an already-running app**:
+  1. "open notepad"                  → launch.
+  2. Click somewhere else to defocus it.
+  3. "focus notepad"                 → raises it (or reports honestly
+     that Windows refused foreground).
+* **Bounded workflow**:
+  * "open notepad then focus it"    → two-step workflow.
+  * "copy hi to clipboard then notify me saying done" → two-step workflow.
+
+### Honest limitations
+
+| Area                 | What you get                               | What is NOT implemented                                      |
+|----------------------|--------------------------------------------|--------------------------------------------------------------|
+| Platform             | Windows only.                              | macOS and Linux fail with `platform_unsupported`.            |
+| Notifications        | Modal-style `MessageBoxW` dialog.          | No Windows toast / action center integration (needs WinRT).  |
+| Focus                | `ShowWindow(SW_RESTORE) + SetForegroundWindow`. | No keyboard/mouse simulation. Windows may refuse foreground changes when another app holds the foreground lock; failure is reported as `set_foreground_refused`. |
+| Window listing       | Foreground window only.                    | No full window enumeration API yet (`app.focus` enumerates internally but does not expose a list). |
+| Clipboard formats    | `CF_UNICODETEXT` (plain text).             | No images, HTML, RTF, or file-drop formats.                  |
+| Clipboard size caps  | 4 KB read excerpt, 64 KB write limit.      | Larger payloads are truncated (read) or rejected (write).    |
+| App allowlist        | Same as `app.launch` (notepad/calc/paint/explorer). | Third-party apps require explicit allowlist configuration. |
+| Shell                | None. No `powershell`, `cmd`, `msg`, or templated shell invocations. | `app.install` remains intentionally unimplemented. |
+
+## Screen & UI awareness (v1)
+
+The assistant can now **capture a screenshot of the foreground window or
+the full virtual desktop**, save it to the workspace, and preview it in
+the HUD. Capture is user-requested only — there is no background loop,
+no periodic snapshotter, and no OCR in v1. Everything flows through
+ActionGateway + PolicyEngine and is recorded on the signed event log.
+
+### Supported capabilities
+
+| Capability                       | Tier | Scope                | What it does                                                                  |
+|----------------------------------|------|----------------------|-------------------------------------------------------------------------------|
+| `desktop.screenshot_foreground`  | 0    | `desktop.screen_read`| Captures the current foreground window via `PrintWindow(PW_RENDERFULLCONTENT)`. |
+| `desktop.screenshot_full`        | 0    | `desktop.screen_read`| Captures the virtual screen (all monitors) via `BitBlt(SRCCOPY \| CAPTUREBLT)`. |
+
+PNGs are written to `runtime/screenshots/screenshot-<uuid>.png` using a
+stdlib PNG encoder (`struct` + `zlib.crc32` + `zlib.compress`) — no
+Pillow dependency.
+
+### Supported phrasings (planner rules)
+
+| You say                                                     | Maps to                           |
+|-------------------------------------------------------------|-----------------------------------|
+| "take a screenshot", "screenshot", "screenshot my window"   | `desktop.screenshot_foreground`   |
+| "take a screenshot of my current window"                    | `desktop.screenshot_foreground`   |
+| "what is on my screen?"                                     | `desktop.screenshot_foreground`   |
+| "take a full screen screenshot", "capture the entire desktop" | `desktop.screenshot_full`       |
+| "screenshot the whole screen", "capture my desktop"         | `desktop.screenshot_full`         |
+
+The planner defaults to the **foreground window** when the phrasing is
+ambiguous; the full virtual screen is only used when the user explicitly
+says so ("full screen", "entire desktop", "whole screen", "desktop").
+
+### HUD surface
+
+`DesktopPanel` now renders a "Last screenshot" card showing the most
+recent capture (either mode). The preview is served by the bridge from
+`GET http://127.0.0.1:7821/screenshots/<name>`. The endpoint applies a
+strict filename regex (`screenshot-[A-Za-z0-9_-]+\.png`) and verifies
+that the resolved path's parent equals the configured screenshots root
+before reading, so `..`-style traversal is refused with 404.
+
+### How to test
+
+```
+# From the HUD task input:
+take a screenshot               # → desktop.screenshot_foreground, PNG on disk, preview in HUD
+take a full screen screenshot   # → desktop.screenshot_full across all monitors
+```
+
+Or hit the bridge directly:
+
+```powershell
+curl -X POST http://127.0.0.1:7821/actions/propose `
+     -H 'Content-Type: application/json' `
+     -d '{\"capability\":\"desktop.screenshot_foreground\",\"parameters\":{},\"confidence\":0.95}'
+```
+
+### Privacy model
+
+* **User-requested only.** No background capture, no wake-on-window,
+  no timer. Every PNG on disk traces to an explicit, logged action.
+* **Local only.** Screenshots live under `runtime/screenshots/` inside
+  the workspace. Nothing is uploaded or sent off-machine.
+* **Auditable.** Each capture is a normal action: logged on the signed
+  event log, shown in the HUD trace, and listed by capability name.
+
+### Honest limitations
+
+| Area             | What you get                                                       | What is NOT implemented                                      |
+|------------------|--------------------------------------------------------------------|--------------------------------------------------------------|
+| Platform         | Windows only.                                                      | macOS / Linux fail with `platform_unsupported`.              |
+| Foreground mode  | `PrintWindow(hwnd, …, PW_RENDERFULLCONTENT)`.                      | Hardware-accelerated contents (some GPU-composed games, DRM-protected video) may render black — a known Windows limitation. |
+| Full-screen mode | `BitBlt` on the desktop DC across the virtual screen rect.         | DRM-protected surfaces render black; we do not attempt to bypass. |
+| Format           | 24-bit RGB PNG written by a stdlib encoder.                        | No JPEG, no compression levels, no thumbnailing.             |
+| OCR              | **Deferred.** We explicitly ship no text extraction in v1.         | Would require `Windows.Media.Ocr` (WinRT) or Tesseract.      |
+| UI tree          | None. No `UIAutomation`, no element inspection, no text-from-DOM.  | Follow-up checkpoint.                                        |
+| Size ceiling     | Refuses anything > 8192 px in either dimension.                    | No auto-scaling / downsampling.                              |
+
 
