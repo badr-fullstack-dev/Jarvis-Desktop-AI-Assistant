@@ -191,6 +191,36 @@ export interface DesktopScreenshotView {
   updatedAt: string;
 }
 
+export interface DesktopOcrLine {
+  text: string;
+  confidence: number | null;
+}
+
+export interface DesktopOcrView {
+  capability:
+    | "desktop.ocr_foreground"
+    | "desktop.ocr_full"
+    | "desktop.ocr_screenshot";
+  status: string;
+  summary: string;
+  mode: "foreground" | "full" | "screenshot";
+  text: string;
+  truncated: boolean;
+  byteCount: number;
+  charCount: number;
+  lineCount: number;
+  lines: DesktopOcrLine[];
+  averageConfidence: number | null;
+  language: string | null;
+  provider: string;
+  screenshotName: string | null;
+  screenshotPath: string | null;
+  screenshotWidth: number;
+  screenshotHeight: number;
+  screenshotBytes: number;
+  updatedAt: string;
+}
+
 export interface DesktopView {
   clipboard: DesktopClipboardView | null;
   clipboardWrite: DesktopClipboardWriteView | null;
@@ -200,6 +230,10 @@ export interface DesktopView {
   screenshotForeground: DesktopScreenshotView | null;
   screenshotFull: DesktopScreenshotView | null;
   latestScreenshot: DesktopScreenshotView | null;
+  ocrForeground: DesktopOcrView | null;
+  ocrFull: DesktopOcrView | null;
+  ocrScreenshot: DesktopOcrView | null;
+  latestOcr: DesktopOcrView | null;
 }
 
 export interface HudState {
@@ -235,5 +269,8 @@ export type StructuredCapability =
   | "desktop.notify"
   | "desktop.foreground_window"
   | "desktop.screenshot_foreground"
-  | "desktop.screenshot_full";
+  | "desktop.screenshot_full"
+  | "desktop.ocr_foreground"
+  | "desktop.ocr_full"
+  | "desktop.ocr_screenshot";
 

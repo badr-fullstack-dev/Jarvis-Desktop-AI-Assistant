@@ -98,7 +98,16 @@ _DESKTOP_CAPS = {
     "desktop.foreground_window",
     "desktop.screenshot_foreground",
     "desktop.screenshot_full",
+    "desktop.ocr_foreground",
+    "desktop.ocr_full",
+    "desktop.ocr_screenshot",
     "app.focus",
+}
+
+_OCR_CAPS = {
+    "desktop.ocr_foreground",
+    "desktop.ocr_full",
+    "desktop.ocr_screenshot",
 }
 
 # Screenshot filename regex — must match the shape produced by
@@ -157,18 +166,66 @@ def _build_desktop_view(supervisor: Any) -> Optional[Dict[str, Any]]:
             entry["width"] = int(out.get("width") or 0)
             entry["height"] = int(out.get("height") or 0)
             entry["byteCount"] = int(out.get("byte_count") or 0)
+        elif cap in _OCR_CAPS:
+            shot = out.get("screenshot") or {}
+            entry["mode"] = out.get("mode") or (
+                "screenshot" if cap.endswith("screenshot") else
+                ("foreground" if cap.endswith("foreground") else "full")
+            )
+            entry["text"] = out.get("text") or ""
+            entry["truncated"] = bool(out.get("truncated"))
+            entry["byteCount"] = int(out.get("byte_count") or 0)
+            entry["charCount"] = int(out.get("char_count") or 0)
+            entry["lineCount"] = int(out.get("line_count") or 0)
+            entry["lines"] = list(out.get("lines") or [])
+            entry["averageConfidence"] = out.get("average_confidence")
+            entry["language"] = out.get("language")
+            entry["provider"] = out.get("provider") or ""
+            entry["screenshotName"] = shot.get("name")
+            entry["screenshotPath"] = shot.get("path")
+            entry["screenshotWidth"] = int(shot.get("width") or 0)
+            entry["screenshotHeight"] = int(shot.get("height") or 0)
+            entry["screenshotBytes"] = int(shot.get("byte_count") or 0)
         seen[cap] = entry
     if not seen:
         return None
     # Pick the freshest screenshot between the two capabilities for a
     # single "latest screenshot" card — iteration above was newest-first
     # per capability, so the first of the two we saw is the newest.
+    # OCR foreground/full *also* writes a screenshot under the same root,
+    # so we accept those when picking the freshest preview too.
     latest_screenshot: Optional[Dict[str, Any]] = None
     for result in reversed(list(results.values())):
         cap = result.proposal.capability
         if cap in ("desktop.screenshot_foreground", "desktop.screenshot_full"):
             latest_screenshot = seen.get(cap)
             break
+        if cap in ("desktop.ocr_foreground", "desktop.ocr_full"):
+            ocr_entry = seen.get(cap)
+            if ocr_entry and ocr_entry.get("screenshotName"):
+                latest_screenshot = {
+                    "capability": "desktop.screenshot_foreground"
+                                  if cap.endswith("foreground") else "desktop.screenshot_full",
+                    "status": ocr_entry.get("status", "executed"),
+                    "summary": ocr_entry.get("summary", ""),
+                    "mode": "foreground" if cap.endswith("foreground") else "full",
+                    "name": ocr_entry.get("screenshotName"),
+                    "path": ocr_entry.get("screenshotPath"),
+                    "width": ocr_entry.get("screenshotWidth", 0),
+                    "height": ocr_entry.get("screenshotHeight", 0),
+                    "byteCount": ocr_entry.get("screenshotBytes", 0),
+                    "updatedAt": ocr_entry.get("updatedAt", ""),
+                }
+                break
+
+    # Pick the latest OCR result across the three OCR capabilities.
+    latest_ocr: Optional[Dict[str, Any]] = None
+    for result in reversed(list(results.values())):
+        cap = result.proposal.capability
+        if cap in _OCR_CAPS:
+            latest_ocr = seen.get(cap)
+            break
+
     return {
         "clipboard": seen.get("desktop.clipboard_read"),
         "clipboardWrite": seen.get("desktop.clipboard_write"),
@@ -178,6 +235,10 @@ def _build_desktop_view(supervisor: Any) -> Optional[Dict[str, Any]]:
         "screenshotForeground": seen.get("desktop.screenshot_foreground"),
         "screenshotFull": seen.get("desktop.screenshot_full"),
         "latestScreenshot": latest_screenshot,
+        "ocrForeground": seen.get("desktop.ocr_foreground"),
+        "ocrFull": seen.get("desktop.ocr_full"),
+        "ocrScreenshot": seen.get("desktop.ocr_screenshot"),
+        "latestOcr": latest_ocr,
     }
 
 

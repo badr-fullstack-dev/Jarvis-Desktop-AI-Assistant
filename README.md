@@ -186,7 +186,7 @@ python -m unittest discover -s services/orchestrator/tests -t services/orchestra
 ```
 
 This runs runtime + bridge + capability + action-loop + voice + planner
-+ browser-context + workflow + desktop + screenshot tests (200 tests total in this checkpoint). The capability tests use a local
++ browser-context + workflow + desktop + screenshot + OCR tests (229 tests total in this checkpoint). The capability tests use a local
 loopback HTTPServer for browser tests and dry-run mode for
 `app.launch`, so no external network or GUI processes are started.
 Voice / STT tests inject deterministic providers, fake models, and
@@ -463,10 +463,11 @@ Use the prompts in `prompts/` to keep implementation staged:
 6. ~~Browser context awareness: last-read page state + 'read this page' / 'summarize this page' intents, no unsafe automation.~~ ✅ (v1; see *Browser context* below)
 7. ~~Bounded multi-step workflow orchestration — finite, inspectable sequences, each step still guarded.~~ ✅ (v1; see *Bounded workflows* below)
 8. ~~Windows desktop control (clipboard, notifications, foreground window, real `app.focus`).~~ ✅ (v1; see *Windows desktop commands* below)
-9. Add a real browser-automation channel (CDP or WebView2) for in-page extraction and form interaction.
-8. ~~Swap the stub transcription provider for a real local provider (whisper.cpp or faster-whisper) — document privacy properties inline.~~ ✅ (v1; see *Transcription providers*)
-9. Integrate wake word behind an explicit, visible privacy mode — not before the verifier/replay harness is in place.
-10. Expand the verifier and replay/eval harnesses before increasing autonomy.
+9. ~~Local OCR for screenshots and current-window captures (Windows-first, Windows.Media.Ocr).~~ ✅ (v1; see *Local OCR* below)
+10. Add a real browser-automation channel (CDP or WebView2) for in-page extraction and form interaction.
+11. ~~Swap the stub transcription provider for a real local provider (whisper.cpp or faster-whisper) — document privacy properties inline.~~ ✅ (v1; see *Transcription providers*)
+12. Integrate wake word behind an explicit, visible privacy mode — not before the verifier/replay harness is in place.
+13. Expand the verifier and replay/eval harnesses before increasing autonomy.
 
 ## Browser context (v1)
 
@@ -830,8 +831,173 @@ curl -X POST http://127.0.0.1:7821/actions/propose `
 | Foreground mode  | `PrintWindow(hwnd, …, PW_RENDERFULLCONTENT)`.                      | Hardware-accelerated contents (some GPU-composed games, DRM-protected video) may render black — a known Windows limitation. |
 | Full-screen mode | `BitBlt` on the desktop DC across the virtual screen rect.         | DRM-protected surfaces render black; we do not attempt to bypass. |
 | Format           | 24-bit RGB PNG written by a stdlib encoder.                        | No JPEG, no compression levels, no thumbnailing.             |
-| OCR              | **Deferred.** We explicitly ship no text extraction in v1.         | Would require `Windows.Media.Ocr` (WinRT) or Tesseract.      |
+| OCR              | Implemented in checkpoint 8 — see *Local OCR (v1)* below.          | Cloud OCR is intentionally not shipped.                      |
 | UI tree          | None. No `UIAutomation`, no element inspection, no text-from-DOM.  | Follow-up checkpoint.                                        |
 | Size ceiling     | Refuses anything > 8192 px in either dimension.                    | No auto-scaling / downsampling.                              |
 
+## Local OCR (v1)
+
+The assistant can now **extract text from a captured screenshot or the
+current foreground window**, fully on-device. Like every other
+capability, OCR runs through ActionGateway + PolicyEngine, is recorded
+on the signed audit log, and only fires on an explicit user request —
+there is no background OCR loop and no periodic polling.
+
+### Supported capabilities
+
+| Capability                  | Tier | Scope                  | What it does                                                                  |
+|-----------------------------|------|------------------------|-------------------------------------------------------------------------------|
+| `desktop.ocr_foreground`    | 0    | `desktop.screen_read`  | Captures the current foreground window, then runs OCR on the PNG. Saves the source screenshot under `runtime/screenshots/` so the HUD can preview it next to the text. |
+| `desktop.ocr_full`          | 0    | `desktop.screen_read`  | Same flow for the full virtual screen.                                        |
+| `desktop.ocr_screenshot`    | 0    | `desktop.screen_read`  | Re-runs OCR on a screenshot already on disk. Accepts only canonical `screenshot-<id>.png` filenames; rejects anything else, including path traversal attempts. |
+
+The output is structured and inspectable:
+
+```jsonc
+{
+  "mode": "foreground",                  // foreground | full | screenshot
+  "screenshot": {
+    "name": "screenshot-<id>.png",
+    "path": "<workspace>/runtime/screenshots/screenshot-<id>.png",
+    "width": 1920, "height": 1080,
+    "byte_count": 1234567
+  },
+  "text": "...",                         // extracted text (capped at 64 KB)
+  "lines": [{"text": "...", "confidence": null}, ...],   // capped at 5,000
+  "truncated": false,                    // true if text or line cap kicked in
+  "byte_count": 1234,                    // pre-truncation utf-8 byte length
+  "char_count": 1234,
+  "line_count": 42,                      // honest count even if `lines` was clipped
+  "average_confidence": null,            // null when provider doesn't expose it
+  "language": "en-US",
+  "provider": "windows-media-ocr",       // honest identifier — see provider table
+  "dry_run": false
+}
+```
+
+### Supported phrasings (planner rules)
+
+| You say                                                          | Maps to                                              |
+|------------------------------------------------------------------|------------------------------------------------------|
+| `ocr my window` / `ocr my current window` / `ocr foreground window` | `desktop.ocr_foreground`                          |
+| `ocr my screen` (default — explicitly foreground)                | `desktop.ocr_foreground`                             |
+| `read text from my current window`                               | `desktop.ocr_foreground`                             |
+| `extract text from my screen` / `extract text from my window`    | `desktop.ocr_foreground`                             |
+| `what text is on my screen?` / `what text is in this window?`    | `desktop.ocr_foreground`                             |
+| `take a screenshot and read it` / `screenshot and ocr it`        | `desktop.ocr_foreground` (single capability captures + OCRs in one step) |
+| `ocr full screen` / `ocr the entire desktop` / `ocr the whole screen` | `desktop.ocr_full`                              |
+| `what text is on my full screen?`                                | `desktop.ocr_full`                                   |
+| `take a full screen screenshot and read it`                      | `desktop.ocr_full`                                   |
+| `ocr screenshot-<id>.png`                                        | `desktop.ocr_screenshot` (with strict name validation) |
+
+The OCR rule is checked **before** the screenshot rule, so
+`what text is on my screen` correctly maps to OCR while
+`what is on my screen` (no "text") still maps to a plain screenshot.
+
+### Setup
+
+Default behaviour ships with the **`unavailable`** OCR provider — every
+OCR action returns a `failed` ActionResult with a remediation hint. No
+fake or placeholder text is ever generated. To enable real OCR:
+
+1. **Install winsdk:**
+   ```powershell
+   python -m pip install winsdk
+   ```
+2. **Install at least one Windows OCR language pack** (free, on-device):
+   * Settings → Time & language → Language → *Add a language*
+   * Pick the language you want OCR for (e.g. *English (United States)*)
+   * Click *Next* → enable **Optical character recognition** under
+     *Optional language features* → *Install*
+3. **Start the bridge with OCR enabled:**
+   ```powershell
+   $env:JARVIS_OCR_PROVIDER = "windows-media-ocr"
+   # Optional: hint a specific language tag.
+   $env:JARVIS_OCR_LANGUAGE = "en-US"
+   python -m jarvis_core
+   ```
+   Or use `auto` to fall back gracefully if `winsdk` isn't installed:
+   ```powershell
+   $env:JARVIS_OCR_PROVIDER = "auto"
+   ```
+
+| Variable                | Values                                                       |
+|-------------------------|--------------------------------------------------------------|
+| `JARVIS_OCR_PROVIDER`   | `unavailable` (default), `windows-media-ocr`, `auto`         |
+| `JARVIS_OCR_LANGUAGE`   | BCP-47 tag, e.g. `en-US`, `fr-FR`. Defaults to the first language installed in the user profile. |
+
+`auto` reports the actual chain it ran (e.g. `windows-media-ocr+unavailable`) in the
+HUD's *Last OCR result* card so you can tell whether you're getting real
+OCR or hitting the unavailable fallback.
+
+### How to test end-to-end
+
+With the bridge + HUD running and `JARVIS_OCR_PROVIDER=windows-media-ocr`:
+
+1. **Foreground OCR** — Type `ocr my current window` (or hold push-to-talk
+   and say it) into the HUD task box. The Auto-Plan panel should show
+   `desktop.ocr_foreground`. The Desktop State panel renders a *Last OCR
+   result* card with the source screenshot, line count, and the extracted
+   text in a focusable `<pre>` block.
+2. **Full screen OCR** — `ocr the entire desktop`. Expect the *Last OCR
+   result* card to use `mode: full` and the screenshot to span all monitors.
+3. **Re-OCR an existing screenshot** — first run `take a screenshot`,
+   note the `screenshot-…png` name shown under *Last screenshot*, then
+   say `ocr screenshot-<that-id>.png`. The OCR rule pulls the file from
+   `runtime/screenshots/` (path-traversal hardened) and runs the
+   provider on it.
+4. **No provider configured** — without setting
+   `JARVIS_OCR_PROVIDER`, the same request returns `failed` with a clear
+   remediation hint pointing at this README.
+5. **Bridge endpoint** — `GET http://127.0.0.1:7821/hud-state` includes
+   `desktop.latestOcr` with text, lines, provider, language, screenshot
+   metadata, and a truncation flag. The source PNG is served by the
+   existing `GET /screenshots/<name>` endpoint.
+
+Or hit the bridge directly:
+
+```powershell
+curl -X POST http://127.0.0.1:7821/actions/propose `
+     -H 'Content-Type: application/json' `
+     -d '{\"capability\":\"desktop.ocr_foreground\",\"parameters\":{},\"confidence\":0.95}'
+```
+
+### Privacy model
+
+* **User-requested only.** OCR runs only when an explicit action arrives
+  through the gateway. There is no background loop, no periodic timer,
+  no wake-on-window. Every OCR result has a corresponding entry on the
+  signed audit log.
+* **Local only.** `windows-media-ocr` uses Microsoft's on-device OCR
+  engine (the same one File Explorer uses for image search). No image
+  bytes leave the machine. Cloud OCR is intentionally not shipped — if
+  you add a cloud provider later, document the privacy impact in this
+  section *before* it becomes selectable.
+* **No mouse / keyboard automation.** OCR is read-only. This checkpoint
+  introduces zero new write surface.
+* **No DOM / no UIAutomation.** OCR works on raster pixels, not on the
+  underlying app's accessibility tree. App-aware text extraction is a
+  separate (deferred) capability.
+
+### Honest limitations
+
+| Area               | What you get                                                                                | What is NOT implemented                                                                            |
+|--------------------|---------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------|
+| Platform           | Windows only.                                                                               | macOS / Linux fail with `platform_unsupported`.                                                    |
+| Provider           | `unavailable` (default) and `windows-media-ocr` (via the `winsdk` pip package).             | No Tesseract, no EasyOCR, no cloud APIs. The provider abstraction makes adding one straightforward. |
+| Confidence         | Windows.Media.Ocr does NOT surface per-word or per-line confidence; we report `null` in `confidence` and `average_confidence`. | Not a bug — the underlying API genuinely does not expose it. Other providers may fill it in. |
+| Languages          | Whatever Windows OCR language packs are installed in the user profile.                      | We do not download language packs. Without one, the provider raises a clear error.                 |
+| GPU-composed surfaces | OCR runs on the captured PNG. If the screenshot itself rendered black (DRM, hardware overlay), OCR will see nothing. | We don't try to bypass DRM.                                                                    |
+| Truncation         | Text capped at 64 KB; line list capped at 5,000. Both flag `truncated: true` honestly; full counts are still reported in `byte_count` / `line_count`. | No streaming. The full text is in the action result `output` even after the HUD-facing copy is clipped. |
+| `desktop.ocr_screenshot` | Filename must match `screenshot-<id>.png` exactly (regex + parent-resolve guard). | No way to OCR an arbitrary file outside `runtime/screenshots/`. By design.                  |
+| UI tree            | None. OCR is pixel-based, not semantic.                                                     | UIAutomation / accessibility tree extraction is a separate (deferred) capability.                   |
+| Workflow           | The capture+OCR composite lives inside a single capability call — no workflow needed.       | We did NOT add a `wf.screenshot_then_ocr` workflow. The runner is fully-materialised up-front and does not introspect step outputs to decide later steps; staying within one capability preserves that contract. |
+
+### Dev workflow
+
+`python -m jarvis_core.dev_watch` already picks up edits under
+`jarvis_core/` (including the new `ocr_providers.py` and changes to
+`capabilities/desktop.py`, `planner.py`, and `bridge.py`) plus
+`configs/policy.default.json`. Edit → save → bridge respawns
+automatically on the same port.
 

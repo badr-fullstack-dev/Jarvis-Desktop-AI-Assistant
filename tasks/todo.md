@@ -130,6 +130,33 @@ Shipped stdlib-only screen observation. `DesktopCapability` grew two new Tier 0 
 
 ---
 
+## Checkpoint 8 — Local OCR (started 2026-04-27)
+
+### Plan
+- [x] `OCRProvider` ABC + `OCRError` + `UnavailableOCRProvider` (default — fails honestly with remediation hint, no fake text).
+- [x] `WindowsMediaOCRProvider` — local OCR via `winsdk` (Windows.Media.Ocr). Lazy import; honest error if `winsdk` is missing or no language packs are installed.
+- [x] `build_ocr_provider_from_env(JARVIS_OCR_PROVIDER, JARVIS_OCR_LANGUAGE)` with `auto` chain (windows-media-ocr → unavailable).
+- [x] Three new capabilities on `DesktopCapability`, all Tier 0 / scope `desktop.screen_read` — foreground/full/screenshot.
+- [x] Structured OCR output (mode, screenshot meta, text, lines, byte/char/line counts, average_confidence=null, language, provider, dry_run).
+- [x] Caps: 64 KB extracted text, 5,000 lines; honest pre-truncation counts preserved.
+- [x] Policy entries for all three OCR capabilities.
+- [x] Planner rule for OCR (runs before screenshot rule). All supported phrasings unit-tested.
+- [x] `LocalSupervisorAPI` constructs OCR provider from env and passes it into `DesktopCapability`.
+- [x] Bridge registers OCR caps in `_DESKTOP_CAPS`; `_build_desktop_view` exposes `latestOcr`, `ocrForeground/Full/Screenshot`, and reuses OCR's source screenshot for `latestScreenshot` when no plain capture is more recent.
+- [x] HUD: `DesktopOcrView` contract; `DesktopPanel` renders OCR card with semantic markup reviewed by accessibility-lead (aria-labelledby/aria-describedby on the focusable `<pre>`, decorative alt on the duplicate-content image, role="status" on the truncation warning, sanitised id fragments).
+- [x] 29 OCR tests added (provider builder, composite, adapter foreground/full/screenshot, dry-run, non-Windows, provider failure, path traversal, missing file, truncation, line cap, planner mappings, end-to-end via API, bridge view via HTTP).
+- [x] README "Local OCR (v1)" section with capability table, output shape, planner phrasings, setup, env vars, end-to-end test plan, privacy model, and an honest-limitations table (no confidence, language-pack dependence, GPU-composed surfaces, scope of `desktop.ocr_screenshot`).
+- [x] Full suite — 229 tests passing.
+
+### Review
+Shipped Windows-first local OCR. New `ocr_providers.py` mirrors the voice-provider shape (ABC + Unavailable + WindowsMediaOCR + Composite + env builder) with a clear contract: missing dependencies raise `OCRError` with actionable instructions and we never fabricate text. `DesktopCapability` grew three Tier-0 capabilities — foreground/full *capture-and-OCR* in one call (which is what "take a screenshot and read it" really means, so no workflow needed), plus `desktop.ocr_screenshot` for re-OCRing an existing PNG by name (regex + parent-resolve guard, same hardening as the bridge endpoint). `winsdk` is an opt-in pip dep; the default provider is `unavailable` so a fresh checkout has zero OCR until the user explicitly enables it.
+
+Honest limits called out in the README: Windows.Media.Ocr does not expose per-word/line confidence (we report `null`, not a fake number); recognition depends on installed language packs; DRM-protected surfaces stay black. Nothing bypasses ActionGateway/PolicyEngine; no mouse/keyboard automation introduced; no background OCR. 229 tests passing.
+
+Accessibility-lead reviewed the HUD card before any TSX was written. Their corrections went straight into the implementation: dropped invalid `<label htmlFor>` for `aria-labelledby` on the focusable `<pre>`; dropped redundant `aria-label` (would have masked the text content); decorative `alt=""` on the OCR source image (text already exposed below); `role="status"` instead of `role="note"` on the truncation warning so it announces; sanitised the timestamp-derived id fragment.
+
+---
+
 ## Ongoing / future
 
 See the "Next recommended step" list in `README.md`. Currently open:

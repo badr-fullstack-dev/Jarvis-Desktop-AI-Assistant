@@ -144,6 +144,24 @@
         "desktop.screen_read"
       ]
     },
+    "desktop.ocr_foreground": {
+      "tier": 0,
+      "scopes": [
+        "desktop.screen_read"
+      ]
+    },
+    "desktop.ocr_full": {
+      "tier": 0,
+      "scopes": [
+        "desktop.screen_read"
+      ]
+    },
+    "desktop.ocr_screenshot": {
+      "tier": 0,
+      "scopes": [
+        "desktop.screen_read"
+      ]
+    },
     "system.delete": {
       "tier": 3,
       "scopes": [

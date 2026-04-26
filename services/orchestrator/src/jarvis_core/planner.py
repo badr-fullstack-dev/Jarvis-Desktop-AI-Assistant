@@ -244,6 +244,10 @@ class DeterministicPlanner:
             self._rule_clipboard_write,
             self._rule_notify,
             self._rule_foreground_window,
+            # OCR must come BEFORE screenshot — "what text is on my screen"
+            # should not be swallowed by the more general "what is on my
+            # screen" → screenshot rule.
+            self._rule_ocr,
             self._rule_screenshot,
             self._rule_focus_app,
             self._rule_write_file,
@@ -781,6 +785,121 @@ class DeterministicPlanner:
                     confidence=0.9,
                     rationale="Matched foreground-window screenshot phrasing → desktop.screenshot_foreground.",
                     matched_rule="desktop.screenshot_foreground",
+                )
+        return None
+
+    def _rule_ocr(self, text: str, lower: str) -> Optional[PlanResult]:
+        """OCR phrasings → desktop.ocr_foreground / desktop.ocr_full / desktop.ocr_screenshot.
+
+        Defaults to the foreground window when phrasing is ambiguous.
+        Maps to ocr_full only when the user explicitly says so
+        (e.g. "full screen", "entire desktop", "whole screen").
+
+        Phrasings supported:
+        * "ocr my window" / "ocr my screen" / "ocr foreground window"
+        * "read text from my window" / "read text on my screen"
+        * "extract text from my window" / "extract text from my screen"
+        * "what text is on my screen?" / "what text is in this window?"
+        * "take a screenshot and read it" / "screenshot and ocr it"
+        * "ocr full screen" / "ocr entire desktop" / "ocr the whole screen"
+        * "ocr screenshot-<id>.png" / "ocr the screenshot screenshot-<id>.png"
+        """
+        # 1. OCR an existing screenshot by canonical name.
+        m = re.match(
+            r"^\s*(?:ocr|read\s+text\s+(?:from|in)|extract\s+text\s+from)\s+"
+            r"(?:the\s+)?(?:screenshot\s+)?"
+            r"(screenshot-[A-Za-z0-9_-]+\.png)\s*\??\s*$",
+            text, re.IGNORECASE,
+        )
+        if m:
+            return PlanResult(
+                status=MAPPED,
+                original_text=text,
+                capability="desktop.ocr_screenshot",
+                parameters={"name": m.group(1)},
+                confidence=0.9,
+                rationale=f"Matched 'ocr <screenshot file>' → desktop.ocr_screenshot ({m.group(1)}).",
+                matched_rule="desktop.ocr_screenshot",
+            )
+
+        # 2. Composite "screenshot and read/ocr it" — single capability handles
+        #    both capture + OCR. Foreground unless the user names the full
+        #    screen explicitly.
+        m = re.match(
+            r"^\s*(?:take|capture|grab)\s+(?:a\s+)?"
+            r"(?:(full\s+screen|entire\s+(?:screen|desktop)|whole\s+(?:screen|desktop))\s+)?"
+            r"screenshot\s+(?:and|then)\s+"
+            r"(?:read|ocr|extract\s+text(?:\s+from)?(?:\s+it)?)\s*"
+            r"(?:it|the\s+(?:image|screenshot))?\s*\??\s*$",
+            text, re.IGNORECASE,
+        )
+        if m:
+            full = m.group(1) is not None
+            cap = "desktop.ocr_full" if full else "desktop.ocr_foreground"
+            return PlanResult(
+                status=MAPPED,
+                original_text=text,
+                capability=cap,
+                parameters={},
+                confidence=0.9,
+                rationale=f"Matched 'screenshot and read it' → {cap}.",
+                matched_rule="desktop.ocr_capture_and_read",
+            )
+
+        # 3. Explicit full-screen OCR phrasings (must come before the
+        #    foreground default so "ocr full screen" doesn't fall through).
+        full_patterns = [
+            r"^\s*(?:ocr|read\s+text\s+(?:from|on|in)|extract\s+text\s+(?:from|on|in)?)\s+"
+            r"(?:my\s+|the\s+)?"
+            r"(?:full(?:\s+screen)?|entire\s+(?:screen|desktop)|whole\s+(?:screen|desktop)|desktop)\s*\??\s*$",
+            r"^\s*what\s+text\s+is\s+on\s+(?:my\s+|the\s+)?"
+            r"(?:full(?:\s+screen)?|entire\s+(?:screen|desktop)|whole\s+(?:screen|desktop)|desktop)\s*\??\s*$",
+            r"^\s*(?:ocr|extract\s+text)\s+(?:the\s+)?"
+            r"(?:full\s+screen|entire\s+(?:screen|desktop)|whole\s+(?:screen|desktop))"
+            r"(?:\s+for\s+me)?\s*\??\s*$",
+        ]
+        for pat in full_patterns:
+            if re.match(pat, text, re.IGNORECASE):
+                return PlanResult(
+                    status=MAPPED,
+                    original_text=text,
+                    capability="desktop.ocr_full",
+                    parameters={},
+                    confidence=0.9,
+                    rationale="Matched full-screen OCR phrasing → desktop.ocr_full.",
+                    matched_rule="desktop.ocr_full",
+                )
+
+        # 4. Foreground OCR — the default for ambiguous "ocr my screen".
+        foreground_patterns = [
+            # "ocr my window" / "ocr foreground window" / "ocr the active window"
+            r"^\s*ocr\s+(?:my\s+|the\s+)?"
+            r"(?:current\s+|active\s+|foreground\s+)?(?:window|screen)\s*\??\s*$",
+            r"^\s*ocr\s+this\s+(?:window|screen)\s*\??\s*$",
+            r"^\s*ocr\s+it\s*\??\s*$",
+            # "read text from my (current) window/screen"
+            r"^\s*read\s+(?:the\s+)?text\s+(?:from|on|in)\s+(?:my\s+|the\s+|this\s+)?"
+            r"(?:current\s+|active\s+|foreground\s+)?(?:window|screen)\s*\??\s*$",
+            # "extract text from my (current) window/screen"
+            r"^\s*extract\s+(?:the\s+)?text\s+(?:from|on|in)\s+(?:my\s+|the\s+|this\s+)?"
+            r"(?:current\s+|active\s+|foreground\s+)?(?:window|screen)\s*\??\s*$",
+            # "what text is on my screen / in this window?"
+            r"^\s*what\s+text\s+is\s+(?:on|in)\s+(?:my\s+|the\s+|this\s+)?"
+            r"(?:current\s+|active\s+|foreground\s+)?(?:window|screen)\s*\??\s*$",
+            # "what does my screen say" / "what does the window say"
+            r"^\s*what\s+does\s+(?:my\s+|the\s+|this\s+)?"
+            r"(?:current\s+|active\s+|foreground\s+)?(?:window|screen)\s+say\s*\??\s*$",
+        ]
+        for pat in foreground_patterns:
+            if re.match(pat, text, re.IGNORECASE):
+                return PlanResult(
+                    status=MAPPED,
+                    original_text=text,
+                    capability="desktop.ocr_foreground",
+                    parameters={},
+                    confidence=0.9,
+                    rationale="Matched foreground OCR phrasing → desktop.ocr_foreground.",
+                    matched_rule="desktop.ocr_foreground",
                 )
         return None
 

@@ -15,3 +15,4 @@ runtime/
 apps/hud/src-tauri/target/
 tasks/lessons.md 
 CLAUDE.md
+graphify-out/

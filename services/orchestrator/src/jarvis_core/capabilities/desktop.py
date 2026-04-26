@@ -30,6 +30,7 @@ Design notes
 from __future__ import annotations
 
 import ctypes
+import re
 import struct
 import sys
 import threading
@@ -39,6 +40,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from ..models import ActionProposal, ActionResult, new_id
+from ..ocr_providers import (
+    OCRError,
+    OCRProvider,
+    UnavailableOCRProvider,
+)
 from .base import CapabilityAdapter
 
 
@@ -49,7 +55,20 @@ _SUPPORTED = {
     "desktop.foreground_window",
     "desktop.screenshot_foreground",
     "desktop.screenshot_full",
+    "desktop.ocr_foreground",
+    "desktop.ocr_full",
+    "desktop.ocr_screenshot",
 }
+
+# Match the canonical screenshot filename produced by ``_exec_screenshot``
+# below. Mirrors the bridge regex so OCR-by-name cannot escape the
+# screenshots directory or read attacker-supplied paths.
+_SCREENSHOT_NAME_RE = re.compile(r"^screenshot-[A-Za-z0-9_-]+\.png$")
+
+# OCR caps — applied at the adapter regardless of provider, so the HUD
+# never has to render a 1 MB blob inline.
+_MAX_OCR_TEXT_BYTES = 64 * 1024
+_MAX_OCR_LINES = 5_000
 
 # Caps — applied at adapter level, independent of policy tiering.
 _MAX_CLIPBOARD_READ = 4 * 1024
@@ -412,6 +431,7 @@ class DesktopCapability(CapabilityAdapter):
         capture_full_fn=None,
         screenshots_dir: Optional[Path] = None,
         platform: Optional[str] = None,
+        ocr_provider: Optional[OCRProvider] = None,
     ) -> None:
         self._platform = platform or sys.platform
         self._clipboard_read = clipboard_read_fn or _win_clipboard_read
@@ -421,6 +441,10 @@ class DesktopCapability(CapabilityAdapter):
         self._capture_foreground = capture_foreground_fn or _win_capture_foreground
         self._capture_full = capture_full_fn or _win_capture_full_screen
         self._screenshots_dir = Path(screenshots_dir) if screenshots_dir else None
+        # Default to the explicit "no OCR configured" provider. The API
+        # layer wires the real provider (windows-media-ocr / auto) from
+        # JARVIS_OCR_PROVIDER. Tests inject a fake provider directly.
+        self._ocr_provider: OCRProvider = ocr_provider or UnavailableOCRProvider()
 
     # ------------------------------------------------------------------
     def supports(self, capability: str) -> bool:
@@ -442,7 +466,13 @@ class DesktopCapability(CapabilityAdapter):
                 return self._exec_screenshot(proposal, mode="foreground")
             if proposal.capability == "desktop.screenshot_full":
                 return self._exec_screenshot(proposal, mode="full")
-        except (ValueError, OSError) as exc:
+            if proposal.capability == "desktop.ocr_foreground":
+                return self._exec_ocr_capture(proposal, mode="foreground")
+            if proposal.capability == "desktop.ocr_full":
+                return self._exec_ocr_capture(proposal, mode="full")
+            if proposal.capability == "desktop.ocr_screenshot":
+                return self._exec_ocr_screenshot(proposal)
+        except (ValueError, OSError, OCRError) as exc:
             return ActionResult(
                 proposal=proposal, status="failed",
                 summary=f"{proposal.capability} failed: {exc}",
@@ -585,6 +615,162 @@ class DesktopCapability(CapabilityAdapter):
                 "dry_run": False,
             },
         )
+
+    # ------------------------------------------------------------------
+    # OCR
+    # ------------------------------------------------------------------
+    def _truncate_ocr_text(self, text: str) -> Tuple[str, bool, int]:
+        """Apply the byte-cap. Returns (clipped_text, truncated, raw_byte_len)."""
+        raw_bytes = (text or "").encode("utf-8", errors="replace")
+        if len(raw_bytes) <= _MAX_OCR_TEXT_BYTES:
+            return (text or ""), False, len(raw_bytes)
+        # Slice on a UTF-8 boundary by re-decoding ignoring trailing partial char.
+        clipped = raw_bytes[:_MAX_OCR_TEXT_BYTES].decode("utf-8", errors="ignore")
+        return clipped, True, len(raw_bytes)
+
+    def _ocr_run(
+        self,
+        png_bytes: bytes,
+        proposal: ActionProposal,
+        *,
+        mode: str,
+        screenshot_meta: Optional[Dict[str, Any]],
+    ) -> ActionResult:
+        """Shared OCR finisher — runs the provider and assembles the result.
+
+        The capability layer caps the returned text and line list before
+        the result lands in any task trace or HUD JSON, so a pathological
+        OCR output cannot bloat /hud-state.
+        """
+        provider = self._ocr_provider
+        # Always go through extract(); the provider raises OCRError with a
+        # clear remediation hint if it's not configured. We don't gate on
+        # available() here because the provider's own message is more
+        # specific (e.g. "winsdk import failed: ..." vs the generic case).
+        result = provider.extract(png_bytes, language=None)
+        clipped, truncated, raw_byte_len = self._truncate_ocr_text(result.text or "")
+        # Cap the line list separately. Keep the order stable.
+        lines = [ln.to_dict() for ln in result.lines][:_MAX_OCR_LINES]
+        line_count = len(result.lines)
+        line_truncated = line_count > _MAX_OCR_LINES
+
+        output: Dict[str, Any] = {
+            "mode": mode,
+            "screenshot": screenshot_meta,
+            "text": clipped,
+            "truncated": truncated or line_truncated,
+            "byte_count": raw_byte_len,
+            "char_count": len(clipped),
+            "line_count": line_count,
+            "lines": lines,
+            "average_confidence": result.average_confidence,
+            "language": result.language,
+            "provider": result.provider or provider.name,
+            "dry_run": False,
+        }
+        title_bits = []
+        if screenshot_meta and screenshot_meta.get("name"):
+            title_bits.append(str(screenshot_meta.get("name")))
+        title_bits.append(f"{line_count} line{'s' if line_count != 1 else ''}")
+        title_bits.append(f"{len(clipped)} chars")
+        if truncated or line_truncated:
+            title_bits.append("truncated")
+        return ActionResult(
+            proposal=proposal, status="executed",
+            summary=f"OCR ({mode}): " + " · ".join(title_bits),
+            output=output,
+        )
+
+    def _exec_ocr_capture(self, proposal: ActionProposal, *, mode: str) -> ActionResult:
+        if proposal.dry_run:
+            return ActionResult(
+                proposal=proposal, status="executed",
+                summary=f"[dry-run] Would OCR the {mode} {'window' if mode == 'foreground' else 'screen'}.",
+                output={
+                    "mode": mode, "screenshot": None, "text": "",
+                    "truncated": False, "byte_count": 0, "char_count": 0,
+                    "line_count": 0, "lines": [],
+                    "average_confidence": None, "language": None,
+                    "provider": getattr(self._ocr_provider, "name", "unavailable"),
+                    "dry_run": True,
+                },
+            )
+        if self._screenshots_dir is None:
+            raise OSError(
+                "Screenshots directory is not configured. Set "
+                "screenshots_dir on DesktopCapability."
+            )
+        capture = self._capture_foreground if mode == "foreground" else self._capture_full
+        width, height, rgb = capture()
+        if not isinstance(rgb, (bytes, bytearray)):
+            raise OSError(f"Capture returned non-bytes buffer of type {type(rgb).__name__}")
+        png = _rgb_to_png(int(width), int(height), bytes(rgb))
+        # Persist the screenshot alongside the OCR result so the HUD can
+        # show the source image. Reuses the same naming/location as the
+        # plain screenshot capabilities — the bridge endpoint serves both.
+        self._screenshots_dir.mkdir(parents=True, exist_ok=True)
+        name = f"{new_id('screenshot')}.png"
+        path = self._screenshots_dir / name
+        path.write_bytes(png)
+        screenshot_meta = {
+            "name": name,
+            "path": str(path),
+            "width": int(width),
+            "height": int(height),
+            "byte_count": len(png),
+        }
+        return self._ocr_run(png, proposal, mode=mode, screenshot_meta=screenshot_meta)
+
+    def _exec_ocr_screenshot(self, proposal: ActionProposal) -> ActionResult:
+        name = proposal.parameters.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("Parameter 'name' is required (string filename).")
+        if not _SCREENSHOT_NAME_RE.match(name):
+            raise ValueError(
+                f"Refusing to OCR {name!r}: name must match "
+                "'screenshot-<id>.png' (no slashes, no path traversal). Use "
+                "the bridge's screenshot listing to find a valid name."
+            )
+        if proposal.dry_run:
+            return ActionResult(
+                proposal=proposal, status="executed",
+                summary=f"[dry-run] Would OCR screenshot {name}.",
+                output={
+                    "mode": "screenshot",
+                    "screenshot": {"name": name, "path": None,
+                                    "width": 0, "height": 0, "byte_count": 0},
+                    "text": "", "truncated": False, "byte_count": 0,
+                    "char_count": 0, "line_count": 0, "lines": [],
+                    "average_confidence": None, "language": None,
+                    "provider": getattr(self._ocr_provider, "name", "unavailable"),
+                    "dry_run": True,
+                },
+            )
+        if self._screenshots_dir is None:
+            raise OSError(
+                "Screenshots directory is not configured. Set "
+                "screenshots_dir on DesktopCapability."
+            )
+        # Path-traversal hardening: resolve the filename inside the
+        # configured root and require the resolved parent to be that root.
+        try:
+            root_resolved = Path(self._screenshots_dir).resolve()
+            target = (root_resolved / name).resolve()
+        except OSError as exc:
+            raise OSError(f"Could not resolve screenshot path: {exc}") from exc
+        if target.parent != root_resolved or not target.is_file():
+            raise OSError(f"Screenshot {name!r} not found in screenshots directory.")
+        png = target.read_bytes()
+        if not png.startswith(b"\x89PNG"):
+            raise OSError(f"{name!r} is not a PNG (bad signature).")
+        screenshot_meta = {
+            "name": name,
+            "path": str(target),
+            "width": 0,   # we don't decode the PNG header here; HUD shows preview anyway
+            "height": 0,
+            "byte_count": len(png),
+        }
+        return self._ocr_run(png, proposal, mode="screenshot", screenshot_meta=screenshot_meta)
 
     def _exec_foreground_window(self, proposal: ActionProposal) -> ActionResult:
         if proposal.dry_run:

@@ -14,6 +14,7 @@ from .event_log import SignedEventLog
 from .gateway import ActionGateway
 from .memory import MemoryStore
 from .models import ActionProposal
+from .ocr_providers import build_ocr_provider_from_env
 from .planner import MAPPED, DeterministicPlanner, PlanResult
 from .policy import PolicyEngine
 from .supervisor import SupervisorRuntime
@@ -49,7 +50,14 @@ class LocalSupervisorAPI:
                 FilesystemCapability(sandbox_root=sandbox_path,
                                      read_roots=[root]),
                 ApplicationCapability(),
-                DesktopCapability(screenshots_dir=screenshots_path),
+                DesktopCapability(
+                    screenshots_dir=screenshots_path,
+                    # Default is the explicit "no OCR configured" provider.
+                    # Set JARVIS_OCR_PROVIDER=windows-media-ocr (after `pip
+                    # install winsdk` and adding a Windows OCR language pack)
+                    # or =auto to enable real local OCR. See ocr_providers.py.
+                    ocr_provider=build_ocr_provider_from_env(),
+                ),
             ],
             workspace_root=root,
             sandbox_root=sandbox_path,
