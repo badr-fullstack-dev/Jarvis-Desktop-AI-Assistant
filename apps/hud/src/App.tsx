@@ -4,6 +4,7 @@ import { HudState } from "./contracts";
 import { ActionPanel } from "./ActionPanel";
 import { BrowserPanel } from "./BrowserPanel";
 import { DesktopPanel } from "./DesktopPanel";
+import { MemoryPanel } from "./MemoryPanel";
 import { PlanPanel } from "./PlanPanel";
 import { VoicePanel } from "./VoicePanel";
 import { WorkflowPanel } from "./WorkflowPanel";
@@ -42,6 +43,8 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
+  const [memoryBusy, setMemoryBusy] = useState<string | null>(null);
+  const [memoryToast, setMemoryToast] = useState<string | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
     try { return localStorage.getItem("jarvis.tts") !== "off"; } catch { return true; }
@@ -143,6 +146,48 @@ export default function App() {
       setApprovalBusy(null);
     }
   };
+
+  const onMemoryApprove = useCallback(async (memoryId: string) => {
+    if (memoryBusy) return;
+    setMemoryBusy(memoryId);
+    try {
+      await invoke("memory_approve", { memoryId });
+      setMemoryToast("Memory approved.");
+      await refresh();
+    } catch (err) {
+      setMemoryToast(`Approve failed: ${typeof err === "string" ? err : String(err)}`);
+    } finally {
+      setMemoryBusy(null);
+    }
+  }, [memoryBusy, refresh]);
+
+  const onMemoryReject = useCallback(async (memoryId: string, reason: string) => {
+    if (memoryBusy) return;
+    setMemoryBusy(memoryId);
+    try {
+      await invoke("memory_reject", { memoryId, reason });
+      setMemoryToast("Memory rejected.");
+      await refresh();
+    } catch (err) {
+      setMemoryToast(`Reject failed: ${typeof err === "string" ? err : String(err)}`);
+    } finally {
+      setMemoryBusy(null);
+    }
+  }, [memoryBusy, refresh]);
+
+  const onMemoryExpire = useCallback(async (memoryId: string) => {
+    if (memoryBusy) return;
+    setMemoryBusy(memoryId);
+    try {
+      await invoke("memory_expire", { memoryId });
+      setMemoryToast("Memory expired.");
+      await refresh();
+    } catch (err) {
+      setMemoryToast(`Expire failed: ${typeof err === "string" ? err : String(err)}`);
+    } finally {
+      setMemoryBusy(null);
+    }
+  }, [memoryBusy, refresh]);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -320,27 +365,18 @@ export default function App() {
           latestResult={state.latestResult ?? null}
         />
 
-        <section className="panel panel-memory">
-          <div className="panel-head">
-            <h2>Memory Candidates</h2>
-            <span>Curated learning only</span>
-          </div>
-          {state.memory.length === 0 && (
-            <p className="empty-hint">No memory items yet.</p>
-          )}
-          <div className="memory-list">
-            {state.memory.map((entry) => (
-              <article key={entry.memoryId} className="memory-card">
-                <div className="memory-meta">
-                  <span>{entry.kind}</span>
-                  <span>{Math.round(entry.trustScore * 100)}% trust</span>
-                </div>
-                <p>{entry.summary}</p>
-                <strong>{entry.status}</strong>
-              </article>
-            ))}
-          </div>
-        </section>
+        <MemoryPanel
+          pending={state.memory.filter((m) => m.status === "candidate")}
+          approved={state.memory.filter((m) => m.status === "approved")}
+          recent={state.memory
+            .filter((m) => m.status === "rejected" || m.status === "expired")
+            .slice(-10)}
+          onApprove={onMemoryApprove}
+          onReject={onMemoryReject}
+          onExpire={onMemoryExpire}
+          busyId={memoryBusy}
+          lastAction={memoryToast}
+        />
 
         <section className="panel panel-trace">
           <div className="panel-head">

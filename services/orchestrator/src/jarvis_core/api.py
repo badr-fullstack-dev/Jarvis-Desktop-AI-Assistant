@@ -17,6 +17,7 @@ from .models import ActionProposal
 from .ocr_providers import build_ocr_provider_from_env
 from .planner import MAPPED, DeterministicPlanner, PlanResult
 from .policy import PolicyEngine
+from .reflection import ApprovedMemoryHints
 from .supervisor import SupervisorRuntime
 from .voice import VoiceSession
 from .voice_providers import build_provider_from_env
@@ -70,7 +71,13 @@ class LocalSupervisorAPI:
         # clearly-labelled stub so nothing real happens without opt-in.
         self.voice = VoiceSession(provider=build_provider_from_env())
         # Deterministic, LLM-free command interpreter. See planner.py.
-        self.planner = DeterministicPlanner()
+        # The planner receives an ``ApprovedMemoryHints`` view so plans
+        # can be annotated with relevant approved memory — but memory
+        # never changes the chosen capability, parameters, or
+        # confidence. Policy is still authoritative.
+        self.planner = DeterministicPlanner(
+            memory_hint_provider=ApprovedMemoryHints(self.memory),
+        )
         # Bounded multi-step workflow layer. Narrow set of v1 patterns
         # (see workflow.py). Runs each step via supervisor.propose_action,
         # so ActionGateway/PolicyEngine/approvals/audit still apply.

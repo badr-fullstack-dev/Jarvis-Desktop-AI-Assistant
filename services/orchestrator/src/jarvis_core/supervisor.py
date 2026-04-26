@@ -9,6 +9,7 @@ from .event_log import SignedEventLog
 from .gateway import ActionGateway
 from .memory import MemoryStore
 from .models import ActionProposal, ActionResult, TaskRecord, TaskStatus
+from .reflection import Reflector
 from .subagents import AgentOutput, default_subagents
 
 
@@ -19,6 +20,7 @@ class SupervisorRuntime:
         self.gateway = gateway
         self.memory = memory
         self.event_log = event_log
+        self.reflector = Reflector(memory)
         self.tasks: Dict[str, TaskRecord] = {}
         # Indexes for first-class approval + action result tracking.
         self.pending_approvals: Dict[str, Dict[str, object]] = {}
@@ -26,6 +28,11 @@ class SupervisorRuntime:
         self.pending_proposals: Dict[str, ActionProposal] = {}
         # action_id -> ActionResult
         self.action_results: Dict[str, ActionResult] = {}
+        # task_id -> set of (event-derived dedup keys) the reflector has
+        # already filed for this task. Stops the same lesson from being
+        # re-proposed after every action when the reflector runs more
+        # than once during a task's lifetime.
+        self._reflected_keys: Dict[str, set] = {}
 
     async def submit_task(self, objective: str, source: str = "text", context: Optional[Dict[str, object]] = None) -> TaskRecord:
         task = TaskRecord(objective=objective, source=source, status=TaskStatus.RUNNING, context=dict(context or {}))
@@ -71,6 +78,13 @@ class SupervisorRuntime:
         elif result.status == "blocked":
             task.trace.append({"event": "action.blocked", "result": result.to_dict()})
             task.touch()
+            self._curate_lessons(task, result)
+        else:
+            # "failed" — surface the failure on the trace and let the
+            # reflector file a tool-reliability candidate.
+            task.trace.append({"event": "action.executed", "result": result.to_dict()})
+            task.touch()
+            self._curate_lessons(task, result)
         return result
 
     # ------------------------------------------------------------------
@@ -110,6 +124,14 @@ class SupervisorRuntime:
         self.action_results[proposal.action_id] = result
         if result.status == "executed":
             self.gateway.verify(result)
+            task.trace.append({"event": "action.executed", "result": result.to_dict()})
+            task.touch()
+            self._curate_lessons(task, result)
+        elif result.status == "blocked":
+            task.trace.append({"event": "action.blocked", "result": result.to_dict()})
+            task.touch()
+            self._curate_lessons(task, result)
+        else:
             task.trace.append({"event": "action.executed", "result": result.to_dict()})
             task.touch()
             self._curate_lessons(task, result)
@@ -237,12 +259,48 @@ class SupervisorRuntime:
         ]
 
     def _curate_lessons(self, task: TaskRecord, result: ActionResult) -> None:
-        lesson = self.memory.propose_lesson(
-            summary=f"After {result.proposal.capability}, always verify the target state before reporting success.",
-            evidence=[result.summary, result.verification.get("mode", "unknown")],
-            trust_score=0.7,
-            details={"task_id": task.task_id, "action_id": result.proposal.action_id},
-        )
-        task.trace.append({"event": "lesson.proposed", "memory": lesson.to_dict()})
-        self.event_log.append("lesson.proposed", lesson.to_dict())
+        """Run the end-of-step reflection pass.
+
+        We invoke the Reflector after every executed action and after
+        any blocking event so a long task can accumulate proposals as
+        it goes. The Reflector itself is idempotent across calls (it
+        returns the *current* set of safe lessons given the current
+        trace); we de-dup by (kind, dedup_key) on this side so the
+        same lesson is filed at most once per task.
+        """
+        proposed = self.reflector.reflect_on_task(task)
+        if not proposed:
+            return
+        seen = self._reflected_keys.setdefault(task.task_id, set())
+        fresh: List[Dict[str, object]] = []
+        for memory in proposed:
+            key = (memory.get("kind"), memory.get("memory_id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh.append(memory)
+        for memory in fresh:
+            task.trace.append({"event": "lesson.proposed", "memory": memory})
+            self.event_log.append("lesson.proposed", memory)
+
+    # ------------------------------------------------------------------
+    # Memory lifecycle wrappers — the bridge calls these so every
+    # status change lands on the signed audit log alongside the action
+    # decisions.
+    # ------------------------------------------------------------------
+
+    def approve_memory(self, memory_id: str) -> Dict[str, object]:
+        row = self.memory.approve(memory_id)
+        self.event_log.append("memory.approved", row)
+        return row
+
+    def reject_memory(self, memory_id: str, reason: str = "") -> Dict[str, object]:
+        row = self.memory.reject(memory_id, reason=reason)
+        self.event_log.append("memory.rejected", row)
+        return row
+
+    def expire_memory(self, memory_id: str, reason: str = "") -> Dict[str, object]:
+        row = self.memory.expire(memory_id, reason=reason)
+        self.event_log.append("memory.expired", row)
+        return row
 

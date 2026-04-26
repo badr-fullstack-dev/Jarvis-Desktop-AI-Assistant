@@ -17,12 +17,26 @@ export interface ApprovalCard {
   target: string;
 }
 
+export type MemoryKind = "profile" | "operational" | "lesson" | "tool";
+export type MemoryStatus = "candidate" | "approved" | "rejected" | "expired";
+
 export interface MemoryCandidate {
   memoryId: string;
-  kind: "profile" | "operational" | "lesson" | "tool";
+  kind: MemoryKind;
   summary: string;
   trustScore: number;
-  status: "candidate" | "approved" | "rejected" | "expired";
+  status: MemoryStatus;
+  evidence?: string[];
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+  reviewReason?: string | null;
+}
+
+export interface MemoryHint {
+  memoryId: string;
+  kind: MemoryKind;
+  summary: string;
+  trustScore: number;
 }
 
 export interface TraceItem {
@@ -64,6 +78,7 @@ export interface PlanResultView {
   rationale: string;
   ambiguity: string | null;
   matchedRule: string | null;
+  memoryHints?: MemoryHint[];
 }
 
 export interface PlanActionView {

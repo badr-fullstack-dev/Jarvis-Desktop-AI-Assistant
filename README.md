@@ -186,7 +186,7 @@ python -m unittest discover -s services/orchestrator/tests -t services/orchestra
 ```
 
 This runs runtime + bridge + capability + action-loop + voice + planner
-+ browser-context + workflow + desktop + screenshot + OCR tests (229 tests total in this checkpoint). The capability tests use a local
++ browser-context + workflow + desktop + screenshot + OCR + memory tests (263 tests total in this checkpoint). The capability tests use a local
 loopback HTTPServer for browser tests and dry-run mode for
 `app.launch`, so no external network or GUI processes are started.
 Voice / STT tests inject deterministic providers, fake models, and
@@ -464,10 +464,11 @@ Use the prompts in `prompts/` to keep implementation staged:
 7. ~~Bounded multi-step workflow orchestration — finite, inspectable sequences, each step still guarded.~~ ✅ (v1; see *Bounded workflows* below)
 8. ~~Windows desktop control (clipboard, notifications, foreground window, real `app.focus`).~~ ✅ (v1; see *Windows desktop commands* below)
 9. ~~Local OCR for screenshots and current-window captures (Windows-first, Windows.Media.Ocr).~~ ✅ (v1; see *Local OCR* below)
-10. Add a real browser-automation channel (CDP or WebView2) for in-page extraction and form interaction.
-11. ~~Swap the stub transcription provider for a real local provider (whisper.cpp or faster-whisper) — document privacy properties inline.~~ ✅ (v1; see *Transcription providers*)
-12. Integrate wake word behind an explicit, visible privacy mode — not before the verifier/replay harness is in place.
-13. Expand the verifier and replay/eval harnesses before increasing autonomy.
+10. ~~Curated memory & reflection — proposal/approval lifecycle, sensitive-data filter, planner hints.~~ ✅ (v1; see *Memory & reflection* below)
+11. Add a real browser-automation channel (CDP or WebView2) for in-page extraction and form interaction.
+12. ~~Swap the stub transcription provider for a real local provider (whisper.cpp or faster-whisper) — document privacy properties inline.~~ ✅ (v1; see *Transcription providers*)
+13. Integrate wake word behind an explicit, visible privacy mode — not before the verifier/replay harness is in place.
+14. Expand the verifier and replay/eval harnesses before increasing autonomy.
 
 ## Browser context (v1)
 
@@ -1000,4 +1001,223 @@ curl -X POST http://127.0.0.1:7821/actions/propose `
 `capabilities/desktop.py`, `planner.py`, and `bridge.py`) plus
 `configs/policy.default.json`. Edit → save → bridge respawns
 automatically on the same port.
+
+## Memory & reflection (v1)
+
+The assistant now has a **curated** memory layer. Proposals come from a
+deterministic post-task reflection pass; approvals come from the user;
+and approved memory is allowed to *annotate* a plan but never to change
+the chosen capability, parameters, or confidence. Policy stays
+authoritative.
+
+### Layers
+
+`runtime/memory/` holds one JSON file per layer:
+
+| Layer         | What it captures                                                            | Example                                                               |
+|---------------|-----------------------------------------------------------------------------|-----------------------------------------------------------------------|
+| `profile`     | Explicit user preferences mined from the objective only                     | "User preference: https when no scheme is given"                      |
+| `operational` | Runtime notes that help future planning (e.g. clean workflow runs)          | "Workflow wf.open_and_focus completed cleanly in 2 steps."            |
+| `lesson`      | Cause-effect lessons from planner clarifications                            | "Planner clarification (write.outside_sandbox): target must be under runtime/sandbox/" |
+| `tool`        | Tool reliability notes from failed or blocked actions                       | "filesystem.write failed with error_type=ScopeError."                 |
+
+Each row carries: `kind`, `summary`, `details` (only structured
+metadata — no user text), `evidence` (task + capability ids), `trust_score`,
+`status`, `reviewed_at`, `reviewed_by`, `review_reason`, `created_at`,
+`memory_id`.
+
+### Lifecycle
+
+```
+candidate ──approve()──▶ approved ──expire()──▶ expired
+candidate ──reject(reason)──▶ rejected
+```
+
+`reject` and `expire` keep the row for audit (a rejected lesson tells
+us what NOT to repeat) and are reversible by editing the JSON or by
+re-proposing. `delete` is a separate physical removal — used sparingly.
+
+Every transition is recorded on the signed event log (`memory.approved`,
+`memory.rejected`, `memory.expired`), and the HUD shows the current
+status alongside `reviewed_at` / `reviewed_by` / `review_reason` for
+each row.
+
+### Reflection (what proposes a memory)
+
+`services/orchestrator/src/jarvis_core/reflection.py` runs at the end
+of every action and proposes memory ONLY for these patterns:
+
+* **Tool reliability** — an action failed or was blocked by policy.
+  Records the capability + `error_type` only — never the error body or
+  the parameters that triggered it.
+* **Planner clarification** — `plan.evaluated` came back
+  `clarification_needed`. Records the `matched_rule` and an excerpt of
+  the *user's* objective (capped at 200 chars).
+* **Workflow completed** — a `wf.*` finished cleanly. Records the
+  `pattern_id` and the list of step capabilities (no parameters).
+* **Explicit preference** — the *objective itself* matches one of:
+  `I prefer …`, `I'd prefer …`, `always …`, `never …`, `from now on …`,
+  `please always …`. Records the captured preference phrase.
+
+The Reflector dedupes within a task (same `(kind, dedup_key)` is filed
+at most once), so a long task with repeated failures of the same
+capability produces a single tool note — not a stream.
+
+### Sensitive-payload filter
+
+`MemoryStore.propose` runs every item through
+`reflection.is_sensitive_payload` before persisting. The filter rejects:
+
+* Summary text containing clipboard/OCR/transcript/screenshot phrases
+  (e.g. "Clipboard contains: …", "OCR result: …", "Transcript was: …").
+* `details[*]` carrying user text under any of the keys: `text`,
+  `transcript`, `excerpt`, `raw_text`, `raw_audio`, `audio`,
+  `audio_base64`, `ocr_text`, `clipboard`, `screenshot`,
+  `screenshot_bytes`, `png_bytes`, `content`.
+* Evidence lists that mention any of the same phrases.
+* Free-form summaries longer than 800 chars.
+
+Sensitive-preference objectives are also skipped: `always store the
+clipboard contents` will NOT become a profile memory because
+`clipboard` is one of the sensitive-data verbs (`clipboard`, `ocr`,
+`screenshot`, `transcript`, `extract`, `read text`, `voice`,
+`microphone`, `password`, `secret`, `token`, `credential`).
+
+The filter is enforced inside the `MemoryStore.propose` call, so even
+hand-written or future code paths cannot smuggle user content into
+long-term memory.
+
+### Memory as planning hints (the safe path)
+
+The `DeterministicPlanner` accepts an `ApprovedMemoryHints` view that
+returns approved memories matching the chosen capability or rule.
+Hints land on `PlanResult.memoryHints` and are surfaced in the HUD as
+a live-region badge ("Memory influenced this plan: …"). Memory hints
+are **advisory only**:
+
+* They never change `capability`, `parameters`, or `confidence`.
+* They never alter the policy decision. A Tier 2 capability stays
+  Tier 2 even when an approved profile memory says otherwise.
+* They never run new actions on their own.
+
+This is verified by `test_memory.MemoryDoesNotBypassPolicyTests`.
+
+### HUD controls
+
+A new **Memory** panel groups items into:
+
+* **Pending proposals** — every candidate. Each row has Approve and
+  Reject buttons; rejection prompts for an optional reason.
+* **Approved** — what the planner can use as a hint. Each row has an
+  Expire button.
+* **Recent** — collapsible list of rejected/expired rows with the
+  reason, kept for audit.
+
+A polite `aria-live` toast announces the result of every approve /
+reject / expire action. Disabled buttons during in-flight requests use
+`aria-disabled` so focus is preserved.
+
+### Bridge endpoints
+
+| Method | Path                              | Purpose                                  |
+|-------:|-----------------------------------|------------------------------------------|
+|  GET   | `/memory?status=&kind=`           | Filtered memory list (existing, extended) |
+|  GET   | `/memory/proposals`               | Convenience: `status=candidate`          |
+|  POST  | `/memory/{memory_id}/approve`     | Flip status to `approved`                |
+|  POST  | `/memory/{memory_id}/reject`      | Body `{reason}` — flip to `rejected`     |
+|  POST  | `/memory/{memory_id}/expire`      | Flip status to `expired`                 |
+
+All four are wrapped by Tauri commands `memory_approve`,
+`memory_reject`, `memory_expire`, `memory_proposals`.
+
+### How to test memory end-to-end
+
+1. Run the unit tests:
+   ```powershell
+   python -m unittest discover -s services/orchestrator/tests -t services/orchestrator
+   ```
+   Memory + reflection tests live in `tests/test_memory.py`; the existing
+   runtime tests now assert the new reflection contract.
+
+2. With the bridge + HUD running, make a tool fail (e.g. propose a
+   `filesystem.read` for an absolute path outside the workspace):
+   ```powershell
+   curl -X POST http://127.0.0.1:7821/actions/propose `
+        -H "Content-Type: application/json" `
+        -d '{\"capability\":\"filesystem.read\",\"parameters\":{\"path\":\"C:/Windows/notepad.exe\"},\"confidence\":0.9}'
+   ```
+   The Memory panel should show one new pending `tool` proposal:
+   "filesystem.read failed with error_type=ScopeError."
+
+3. Click **Approve** in the Memory panel. The toast announces "Memory
+   approved." and the row moves to the Approved section.
+
+4. Submit any new task; the Auto-Plan panel's *Memory influenced this
+   plan* live region appears when the planner picks a capability that
+   matches the approved memory.
+
+5. **Privacy verification.** Try to file a memory carrying sensitive
+   content directly:
+   ```powershell
+   python -c "
+   from src.jarvis_core.api import LocalSupervisorAPI
+   from src.jarvis_core.models import MemoryItem
+   from pathlib import Path
+   api = LocalSupervisorAPI(Path('.'))
+   try:
+       api.memory.propose(MemoryItem(kind='lesson', summary='ok',
+           details={'text': 'raw clipboard contents'},
+           evidence=[], trust_score=0.5))
+   except Exception as e:
+       print('refused:', e)
+   "
+   ```
+   Expect `refused: Refusing to store memory of kind 'lesson': details['text'] carries user content; …`.
+
+### What memory CAN influence
+
+* The HUD's *Memory influenced this plan* badge — purely informational.
+* Future versions of the planner could read approved memory to
+  re-rank ambiguous interpretations. v1 only surfaces hints; it does
+  not re-rank.
+
+### What memory CANNOT influence
+
+* The chosen capability for any planner rule.
+* The planned parameters.
+* The confidence score.
+* The policy tier or any approval requirement. Tier 2 stays Tier 2
+  regardless of approved memory.
+* The blocked-pattern list.
+* Whether an action runs at all.
+
+### Privacy & honest limitations
+
+* **Local only.** All memory lives in `runtime/memory/*.json` on disk.
+  Nothing is uploaded.
+* **No raw user content.** Clipboard text, OCR output, screenshot
+  bytes, raw audio, raw transcripts, and `filesystem.write` body
+  content are blocked at the store level. The Reflector only ever
+  proposes structural metadata (capability, error_type, matched_rule,
+  pattern_id, step capability list) plus a length-bounded excerpt of
+  the user's typed objective when an explicit preference phrase
+  matches.
+* **Approval is mandatory.** Candidates do not influence anything
+  until a human approves them through the HUD.
+* **Reversibility.** Approve, reject, and expire are all reversible
+  by editing `runtime/memory/*.json` or re-proposing. The signed event
+  log records every transition.
+* **No auto-promotion.** The Reflector never approves its own
+  proposals. There is no daemon that promotes memories without a
+  user click.
+* **No hidden memory.** Every layer is a plain JSON file under
+  `runtime/memory/` — `cat profile.json operational.json lesson.json
+  tool.json` is the entire long-term store.
+* **No semantic recall yet.** Memory match is exact-structured
+  (capability == capability, matched_rule == matched_rule). There is
+  no embedding store and no fuzzy retrieval. v2 might add it; v1 is
+  deliberately boring.
+* **Single-user assumption.** No tenant isolation, no per-user
+  partitioning. Approve/reject are attributed to a literal `"user"`
+  string by default.
 

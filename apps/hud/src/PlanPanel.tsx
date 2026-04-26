@@ -87,6 +87,32 @@ export function PlanPanel({ plan, planAction }: Props) {
         </dl>
       )}
 
+      {plan.memoryHints && plan.memoryHints.length > 0 && (
+        // Live region: the badge appears/changes as new plans land. role=status
+        // implies aria-live=polite; the visible label is announced along with
+        // the hint summaries (no aria-label override that would mask them).
+        <div
+          className="plan-memory-hints"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <span className="plan-memory-hints-label">
+            Memory influenced this plan:
+          </span>
+          <ul>
+            {plan.memoryHints.map((h) => (
+              <li key={h.memoryId}>
+                <span className={`memory-kind memory-kind-${h.kind}`}>
+                  {h.kind}
+                </span>
+                <span> {h.summary}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {status !== "mapped" && (
         <>
           <p className="form-error" role="status">

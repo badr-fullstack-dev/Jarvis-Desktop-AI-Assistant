@@ -160,6 +160,27 @@ async fn list_approvals() -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn memory_approve(memory_id: String) -> Result<Value, String> {
+    bridge_post(&format!("/memory/{}/approve", memory_id), serde_json::json!({})).await
+}
+
+#[tauri::command]
+async fn memory_reject(memory_id: String, reason: Option<String>) -> Result<Value, String> {
+    let body = serde_json::json!({ "reason": reason.unwrap_or_default() });
+    bridge_post(&format!("/memory/{}/reject", memory_id), body).await
+}
+
+#[tauri::command]
+async fn memory_expire(memory_id: String) -> Result<Value, String> {
+    bridge_post(&format!("/memory/{}/expire", memory_id), serde_json::json!({})).await
+}
+
+#[tauri::command]
+async fn memory_proposals() -> Result<Value, String> {
+    bridge_get("/memory/proposals").await
+}
+
+#[tauri::command]
 async fn fetch_action(action_id: String) -> Result<Value, String> {
     bridge_get(&format!("/actions/{action_id}")).await
 }
@@ -274,6 +295,10 @@ fn main() {
             browser_context,
             browser_snapshot,
             browser_clear,
+            memory_approve,
+            memory_reject,
+            memory_expire,
+            memory_proposals,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Jarvis HUD");

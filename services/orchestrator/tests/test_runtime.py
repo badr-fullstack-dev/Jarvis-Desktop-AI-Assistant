@@ -65,21 +65,53 @@ class RuntimeTests(unittest.TestCase):
         log.append("beta", {"ok": True})
         self.assertTrue(log.verify_chain())
 
-    def test_executed_action_proposes_lesson(self) -> None:
-        task = asyncio.run(self.api.submit_voice_or_text_task("Read a web page."))
+    def test_failed_action_proposes_tool_reliability_lesson(self) -> None:
+        # The reflector now produces a *targeted* tool memory when an
+        # action fails, instead of the previous boilerplate-after-every-
+        # action behaviour. Read an absolute path that lives outside the
+        # configured read roots so the adapter raises a scope error.
+        task = asyncio.run(self.api.submit_voice_or_text_task("Test reflection."))
+        outside = (Path(__file__).resolve().parent / "test_runtime.py")
         proposal = ActionProposal(
             task_id=task.task_id,
-            capability="browser.read_page",
-            intent="Read https://example.com",
-            parameters={"url": "https://example.com"},
+            capability="filesystem.read",
+            intent="read outside scope",
+            parameters={"path": str(outside)},
             requested_by="tester",
-            evidence=["user request"],
+            evidence=["test"],
+            confidence=0.95,
+        )
+        result = self.api.submit_action(proposal, approved=False)
+        self.assertEqual(result.status, "failed")
+        candidates = self.api.supervisor.fetch_memory_candidates()
+        # Exactly one tool-reliability candidate should be filed for
+        # the failure — no spam.
+        tool_candidates = [c for c in candidates if c.get("kind") == "tool"]
+        self.assertGreaterEqual(len(tool_candidates), 1)
+        self.assertIn("filesystem.read", tool_candidates[0]["summary"])
+
+    def test_clean_action_does_not_spam_lessons(self) -> None:
+        # The old reflector proposed a generic lesson after EVERY
+        # successful action. The new reflector should NOT do that.
+        # Pick an objective that the planner ignores entirely so the
+        # only thing the reflector could fire on is the action itself.
+        task = asyncio.run(self.api.submit_voice_or_text_task("clean run check"))
+        proposal = ActionProposal(
+            task_id=task.task_id,
+            capability="filesystem.read",
+            intent="read policy",
+            parameters={"path": str(self.root / "configs" / "policy.default.json")},
+            requested_by="tester",
+            evidence=["test"],
             confidence=0.95,
         )
         result = self.api.submit_action(proposal, approved=False)
         self.assertEqual(result.status, "executed")
         candidates = self.api.supervisor.fetch_memory_candidates()
-        self.assertGreaterEqual(len(candidates), 1)
+        # No lesson/tool/profile/operational candidate should be filed —
+        # this is a normal, uneventful read.
+        self.assertEqual(len(candidates), 0,
+                         f"Reflector proposed unexpected lessons: {candidates}")
 
 
 if __name__ == "__main__":

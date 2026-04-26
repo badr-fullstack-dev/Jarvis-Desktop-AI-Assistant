@@ -127,6 +127,12 @@ class PlanResult:
     rationale: str = ""                      # why the mapping was made
     ambiguity: Optional[str] = None          # why we declined to map
     matched_rule: Optional[str] = None       # stable id of the rule that fired
+    # Approved memory hints relevant to the chosen capability/rule.
+    # Memory hints are ADVISORY only — they cannot change capability,
+    # parameters, or confidence (the planner attaches them after the
+    # decision is made). The HUD surfaces them so the user can see
+    # which approved memory was relevant.
+    memory_hints: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -138,6 +144,7 @@ class PlanResult:
             "rationale": self.rationale,
             "ambiguity": self.ambiguity,
             "matchedRule": self.matched_rule,
+            "memoryHints": list(self.memory_hints),
         }
 
 
@@ -224,6 +231,15 @@ class DeterministicPlanner:
     a missing parameter.
     """
 
+    def __init__(self, *, memory_hint_provider: Optional[Any] = None) -> None:
+        # ``memory_hint_provider`` must expose a
+        # ``hints_for(capability=..., matched_rule=..., kinds=...)``
+        # method returning a list of {memoryId, kind, summary, trustScore}
+        # dicts. Hints are advisory; they never alter the chosen
+        # capability, parameters, or confidence. See
+        # :class:`reflection.ApprovedMemoryHints`.
+        self._memory_hint_provider = memory_hint_provider
+
     def plan(self, text: str, *, has_browser_context: bool = False) -> PlanResult:
         normalized = _normalize(text)
         if not normalized:
@@ -259,9 +275,9 @@ class DeterministicPlanner:
         ):
             result = rule(normalized, lower)
             if result is not None:
-                return result
+                return self._attach_memory_hints(result)
 
-        return PlanResult(
+        return self._attach_memory_hints(PlanResult(
             status=UNSUPPORTED,
             original_text=text,
             ambiguity=(
@@ -270,7 +286,26 @@ class DeterministicPlanner:
                 "the sandbox, launch an allowlisted app."
             ),
             matched_rule="fallthrough",
-        )
+        ))
+
+    # ------------------------------------------------------------------
+    # Memory hints (advisory only — never alter capability/parameters/
+    # confidence). See planner contract above.
+    # ------------------------------------------------------------------
+
+    def _attach_memory_hints(self, plan: PlanResult) -> PlanResult:
+        provider = self._memory_hint_provider
+        if provider is None:
+            return plan
+        try:
+            hints = provider.hints_for(
+                capability=plan.capability,
+                matched_rule=plan.matched_rule,
+            )
+        except Exception:  # pragma: no cover — defensive
+            return plan
+        plan.memory_hints = list(hints or [])
+        return plan
 
     # ------------------------------------------------------------------
     # Individual rules

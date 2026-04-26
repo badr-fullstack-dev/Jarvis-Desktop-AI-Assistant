@@ -706,6 +706,67 @@ button.secondary {
   clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
 
+/* Memory panel */
+.memory-group-heading {
+  margin: 0.85rem 0 0.35rem;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.memory-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.5rem; }
+.memory-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+}
+.memory-card.memory-card-approved { border-color: rgba(120, 200, 255, 0.45); }
+.memory-card.memory-card-archived { opacity: 0.6; }
+.memory-card-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 0.7rem; opacity: 0.75; margin-bottom: 0.2rem;
+}
+.memory-kind {
+  display: inline-block; padding: 0.05rem 0.4rem; border-radius: 4px;
+  font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;
+  background: rgba(255,255,255,0.07);
+}
+.memory-kind-profile     { background: rgba(120, 200, 255, 0.18); color: #c8e7ff; }
+.memory-kind-operational { background: rgba(180, 220, 120, 0.18); color: #d8efb0; }
+.memory-kind-lesson      { background: rgba(245, 201, 126, 0.20); color: #f8dca0; }
+.memory-kind-tool        { background: rgba(220, 130, 200, 0.18); color: #f0c5e0; }
+.memory-summary { margin: 0.15rem 0 0.4rem; font-size: 0.85rem; word-break: break-word; }
+.memory-evidence { margin: 0.25rem 0; font-size: 0.75rem; }
+.memory-evidence ul { margin: 0.15rem 0 0 1rem; padding: 0; }
+.memory-actions { display: flex; gap: 0.5rem; margin-top: 0.35rem; }
+.memory-actions button {
+  padding: 0.25rem 0.6rem; font-size: 0.75rem;
+  background: rgba(255,255,255,0.06); color: inherit;
+  border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; cursor: pointer;
+}
+.memory-actions button[aria-disabled="true"] { opacity: 0.5; cursor: progress; }
+.memory-status-line { margin: 0.2rem 0 0; font-size: 0.7rem; opacity: 0.7; }
+.memory-toast {
+  min-height: 1rem; font-size: 0.75rem; opacity: 0.8;
+  margin-top: 0.25rem;
+}
+.memory-recent { margin-top: 0.5rem; font-size: 0.78rem; }
+
+/* Plan memory hints — live region */
+.plan-memory-hints {
+  margin-top: 0.5rem; padding: 0.4rem 0.6rem;
+  background: rgba(120, 200, 255, 0.08);
+  border-left: 3px solid rgba(120, 200, 255, 0.55);
+  border-radius: 0 4px 4px 0;
+  font-size: 0.78rem;
+}
+.plan-memory-hints-label {
+  display: block; font-weight: 600; margin-bottom: 0.2rem;
+}
+.plan-memory-hints ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.25rem; }
+.plan-memory-hints li { display: flex; align-items: baseline; gap: 0.4rem; }
+
 @media (max-width: 980px) {
   .shell {
     padding: 1rem;

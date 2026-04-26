@@ -284,7 +284,8 @@ class PlanResultSerializationTests(unittest.TestCase):
         self.assertEqual(
             set(d.keys()),
             {"status", "originalText", "capability", "parameters",
-             "confidence", "rationale", "ambiguity", "matchedRule"},
+             "confidence", "rationale", "ambiguity", "matchedRule",
+             "memoryHints"},
         )
         self.assertEqual(d["status"], "mapped")
         self.assertEqual(d["capability"], "browser.navigate")

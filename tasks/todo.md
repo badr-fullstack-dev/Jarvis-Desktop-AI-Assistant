@@ -157,6 +157,31 @@ Accessibility-lead reviewed the HUD card before any TSX was written. Their corre
 
 ---
 
+## Checkpoint 9 — Curated memory & reflection (started 2026-04-27)
+
+### Plan
+- [x] `MemoryStore` extended with `propose` / `approve` / `reject` / `expire` / `delete` / `get`. Status lifecycle persisted (`reviewed_at`, `reviewed_by`, `review_reason`).
+- [x] New `reflection.py` with `Reflector` + `is_sensitive_payload`. Four proposal patterns: tool failures, planner clarifications, completed workflows, explicit-preference objectives. De-dup within a task.
+- [x] Sensitive-payload filter rejects clipboard / OCR / transcript / screenshot text and free-form summaries longer than 800 chars. Enforced inside `MemoryStore.propose` so no caller can bypass.
+- [x] Supervisor: replaced naive `_curate_lessons` with a Reflector call after every action result (executed/blocked/failed); per-task dedup keeps the trace clean. New `approve_memory` / `reject_memory` / `expire_memory` wrappers log every transition on the signed event log.
+- [x] `DeterministicPlanner` accepts a `memory_hint_provider`. `PlanResult.memoryHints` is advisory only — never changes capability, parameters, or confidence.
+- [x] `LocalSupervisorAPI` wires `ApprovedMemoryHints(self.memory)` into the planner.
+- [x] Bridge endpoints: `GET /memory?status=&kind=`, `GET /memory/proposals`, `POST /memory/{id}/approve`, `POST /memory/{id}/reject`, `POST /memory/{id}/expire`.
+- [x] Tauri commands `memory_approve` / `memory_reject` / `memory_expire` / `memory_proposals`.
+- [x] HUD: new `MemoryPanel` with Pending / Approved / Recent groups + Approve / Reject / Expire actions; live-region toast for action results. `PlanPanel` shows a memory-hint live region when relevant. Accessibility-lead reviewed markup before TSX shipped — feedback applied (no `aria-label` masking content, `role="status"` for live updates, `aria-disabled` over `disabled`, no `<header>` inside `<li>`, no noisy group `aria-label` repetitions).
+- [x] 34 new tests added (memory lifecycle, sensitive-payload filter, reflector emissions for each pattern, dedup, ApprovedMemoryHints scoping by capability/rule, memory-does-not-bypass-policy via real `LocalSupervisorAPI`, bridge endpoints round-tripping approve / reject / expire / 404). Existing `test_executed_action_proposes_lesson` rewritten to match the new reflector contract; new `test_clean_action_does_not_spam_lessons` verifies the old boilerplate behaviour is gone.
+- [x] README "Memory & reflection (v1)" section: layers table, lifecycle diagram, reflection patterns, sensitive-payload filter, planner-hint contract, HUD controls, bridge endpoints, end-to-end test recipe, what memory CAN/CANNOT influence, honest privacy limitations.
+- [x] Full suite — 263 tests passing.
+
+### Review
+Curated memory shipped without giving the assistant any new way to act on its own. Memory `propose` is locked behind a sensitive-payload filter that catches clipboard/OCR/transcript/screenshot text and free-form summaries; `Reflector` emits at most four kinds of structural metadata (capability + error_type, matched_rule, pattern_id, preference phrase) and dedupes within a task. Approval is the only path from candidate → approved, and the planner is wired so memory hints can only annotate a plan — they cannot change capability, parameters, confidence, or the PolicyEngine's tier decision (verified by an end-to-end test that approves a "user prefers filesystem.move without approval" profile memory and asserts Tier 2 still queues an approval).
+
+Accessibility-lead reviewed the new `MemoryPanel` and `PlanPanel` memory-hint markup before any TSX shipped. Their must-fix items applied directly: dropped the noisy `aria-label="Actions for memory <summary>"` repetition; replaced `role="note"` with `role="status"` on the plan memory-hint live region (`role="note"` doesn't announce on update); dropped the stray `<header>`-inside-`<li>` pattern in favour of a plain `div`; switched to `aria-disabled` + click-guard so focus is preserved through async transitions.
+
+No follow-ups left for this checkpoint. The next natural extensions are (a) letting the planner re-rank ambiguous interpretations using approved lessons, and (b) tying memory rows back to the specific event-log entries they came from for true bidirectional audit.
+
+---
+
 ## Ongoing / future
 
 See the "Next recommended step" list in `README.md`. Currently open:

@@ -19,7 +19,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .voice import VoiceError
 
@@ -313,6 +313,10 @@ def _build_hud_state() -> Dict[str, Any]:
             "summary": m.get("summary", ""),
             "trustScore": m.get("trust_score", 0.0),
             "status": m.get("status", "candidate"),
+            "evidence": list(m.get("evidence", []) or []),
+            "reviewedAt": m.get("reviewed_at"),
+            "reviewedBy": m.get("reviewed_by"),
+            "reviewReason": m.get("review_reason"),
         }
         for m in memory.list()
     ]
@@ -425,10 +429,18 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                 self._send_error_json(500, str(exc))
         elif path == "/memory":
             try:
-                items = _api.memory.list() if _api else []
+                qs = parse_qs(urlparse(self.path).query)
+                kind = (qs.get("kind") or [None])[0]
+                status = (qs.get("status") or [None])[0]
+                items = _api.memory.list(kind=kind, status=status) if _api else []
                 self._send_json({"items": items})
             except Exception as exc:
                 self._send_error_json(500, str(exc))
+        elif path == "/memory/proposals":
+            if _api is None:
+                self._send_error_json(503, "Orchestrator not initialised")
+                return
+            self._send_json({"items": _api.memory.list(status="candidate")})
         elif path.startswith("/tasks/") and path.endswith("/trace"):
             task_id = path[len("/tasks/"):-len("/trace")]
             try:
@@ -515,8 +527,45 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         elif path == "/browser/clear":
             self._handle_browser_clear()
 
+        elif path.startswith("/memory/") and path.endswith("/approve"):
+            self._handle_memory_lifecycle("approve",
+                path[len("/memory/"):-len("/approve")])
+        elif path.startswith("/memory/") and path.endswith("/reject"):
+            self._handle_memory_lifecycle("reject",
+                path[len("/memory/"):-len("/reject")])
+        elif path.startswith("/memory/") and path.endswith("/expire"):
+            self._handle_memory_lifecycle("expire",
+                path[len("/memory/"):-len("/expire")])
+
         else:
             self._send_error_json(404, f"Unknown route: {path}")
+
+    def _handle_memory_lifecycle(self, action: str, memory_id: str) -> None:
+        if _api is None:
+            self._send_error_json(503, "Orchestrator not initialised")
+            return
+        if not memory_id:
+            self._send_error_json(400, "memory_id is required in URL")
+            return
+        body = self._read_json_body() or {}
+        reason = (body.get("reason") or "").strip()
+        try:
+            if action == "approve":
+                row = _api.supervisor.approve_memory(memory_id)
+            elif action == "reject":
+                row = _api.supervisor.reject_memory(memory_id, reason=reason)
+            elif action == "expire":
+                row = _api.supervisor.expire_memory(memory_id, reason=reason)
+            else:
+                self._send_error_json(400, f"Unknown memory action: {action}")
+                return
+            self._send_json({"memory": row}, 200)
+        except KeyError as exc:
+            self._send_error_json(404, str(exc))
+        except ValueError as exc:
+            self._send_error_json(400, str(exc))
+        except Exception as exc:
+            self._send_error_json(500, str(exc))
 
     # ------------------------------------------------------------------
     # Screenshot file handler
