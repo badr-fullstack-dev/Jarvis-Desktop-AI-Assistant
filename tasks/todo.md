@@ -182,6 +182,25 @@ No follow-ups left for this checkpoint. The next natural extensions are (a) lett
 
 ---
 
+## Checkpoint 10 — Replay, reliability, and audit review (started 2026-04-27)
+
+### Plan
+- [x] New `reliability.py` module: `task_replay`, `task_summary`, `recent_task_summaries`, `reliability_counters`, `event_log_health`. Read-only over `task.trace` and the signed event log; never mutates either.
+- [x] Privacy redactor (`_scrub_dict`) blocks clipboard/OCR/transcript/screenshot/file-content keys, summarises line/word lists to `{count: N}`, clips summaries and objectives to 200 chars. Idempotent.
+- [x] Bridge endpoints: `GET /tasks?limit=`, `GET /tasks/{id}/replay`, `GET /reliability/health`, `GET /reliability/counters`. Tauri commands `list_recent_tasks`, `fetch_replay`, `reliability_health`, `reliability_counters`.
+- [x] HUD: new `ReplayPanel` with recent-tasks list, redacted timeline, capability counter table (with red flag on non-zero failures/blocks), and an event-log health badge. Accessibility-lead reviewed markup before TSX shipped — feedback applied (`role="alert"` for tamper, `aria-current` instead of `aria-pressed`, scoped table headers, no `aria-label` masking content).
+- [x] 25 new tests across redaction (every sensitive key family), replay shape & ordering, summary rollups, counter aggregation across tasks, event-log health (fresh / appended / tampered / mutation-free), and bridge endpoint round-trips. Full suite — 288 tests passing.
+- [x] README "Replay & reliability (v1)" section: review surface, endpoints, redaction list, what is NOT redacted (and why), honest limits.
+
+### Review
+Shipped a read-only review/diagnostics layer that turns the existing trace + signed event log into a navigable replay surface — without giving the assistant any new capability to act. Every replay event passes through a deterministic redactor that strips clipboard/OCR/transcript/screenshot/file-content payloads but keeps the diagnostic skeleton (capability, status, error_type, verification keys, IDs, decision metadata). The health badge surfaces `verify_chain` integrity assertively (`role="alert"` on tamper) without ever modifying the log. Counters are session-scoped by design; cross-session aggregation off the persistent JSONL is left for a follow-up.
+
+Accessibility-lead reviewed the new panel before TSX was written. Their must-fix items applied directly: split the health badge so the tamper string uses `role="alert"` (assertive interrupt for a security signal) while the healthy path stays `aria-live="polite"`; switched the recent-tasks selector from `aria-pressed` to `aria-current="true"` since this is "current item in a set" not a toggle; kept the canonical `<th scope="col">` / `<th scope="row">` table pattern with an `sr-only` caption; verified heading levels match sibling panels.
+
+No follow-ups left for this checkpoint. Natural next steps: (a) parse persistent `runtime/events.jsonl` so counters survive restarts, (b) add an export-to-JSONL button on a single replay for offline review, (c) signed-log compaction with rotated chains.
+
+---
+
 ## Ongoing / future
 
 See the "Next recommended step" list in `README.md`. Currently open:

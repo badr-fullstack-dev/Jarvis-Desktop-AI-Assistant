@@ -186,7 +186,7 @@ python -m unittest discover -s services/orchestrator/tests -t services/orchestra
 ```
 
 This runs runtime + bridge + capability + action-loop + voice + planner
-+ browser-context + workflow + desktop + screenshot + OCR + memory tests (263 tests total in this checkpoint). The capability tests use a local
++ browser-context + workflow + desktop + screenshot + OCR + memory + reliability tests (288 tests total in this checkpoint). The capability tests use a local
 loopback HTTPServer for browser tests and dry-run mode for
 `app.launch`, so no external network or GUI processes are started.
 Voice / STT tests inject deterministic providers, fake models, and
@@ -465,10 +465,11 @@ Use the prompts in `prompts/` to keep implementation staged:
 8. ~~Windows desktop control (clipboard, notifications, foreground window, real `app.focus`).~~ ✅ (v1; see *Windows desktop commands* below)
 9. ~~Local OCR for screenshots and current-window captures (Windows-first, Windows.Media.Ocr).~~ ✅ (v1; see *Local OCR* below)
 10. ~~Curated memory & reflection — proposal/approval lifecycle, sensitive-data filter, planner hints.~~ ✅ (v1; see *Memory & reflection* below)
-11. Add a real browser-automation channel (CDP or WebView2) for in-page extraction and form interaction.
-12. ~~Swap the stub transcription provider for a real local provider (whisper.cpp or faster-whisper) — document privacy properties inline.~~ ✅ (v1; see *Transcription providers*)
-13. Integrate wake word behind an explicit, visible privacy mode — not before the verifier/replay harness is in place.
-14. Expand the verifier and replay/eval harnesses before increasing autonomy.
+11. ~~Reliability dashboard, task replay, and audit trace review — redacted timelines + by-capability counters + signed-log health.~~ ✅ (v1; see *Replay & reliability* below)
+12. Add a real browser-automation channel (CDP or WebView2) for in-page extraction and form interaction.
+13. ~~Swap the stub transcription provider for a real local provider (whisper.cpp or faster-whisper) — document privacy properties inline.~~ ✅ (v1; see *Transcription providers*)
+14. Integrate wake word behind an explicit, visible privacy mode — not before the verifier/replay harness is in place.
+15. Expand the verifier and replay/eval harnesses before increasing autonomy.
 
 ## Browser context (v1)
 
@@ -1220,4 +1221,143 @@ All four are wrapped by Tauri commands `memory_approve`,
 * **Single-user assumption.** No tenant isolation, no per-user
   partitioning. Approve/reject are attributed to a literal `"user"`
   string by default.
+
+## Replay & reliability (v1)
+
+The HUD now has a **Replay & Reliability** panel that turns the
+per-task trace and the signed event log into something you can
+actually review without leaving the keyboard. The new module
+`services/orchestrator/src/jarvis_core/reliability.py` is read-only
+over the existing trace and log — it never mutates them.
+
+### What you can review
+
+* **Recent tasks list** — the last N tasks (default 25) with status,
+  action count, failure count, and any pending approvals visible at
+  a glance. Click a row to load its replay.
+* **Replay timeline** — a redacted, ordered list of events for the
+  selected task. Each event row shows the timestamp, event type,
+  capability, status, error_type (when relevant), and a
+  ``verify: ok / fail`` indicator drawn from the action's
+  verification dict.
+* **Capability reliability counters** — a table of executed / failed
+  / blocked / awaiting counts per capability across every task this
+  session, plus a totals line for tasks, actions, failures,
+  approvals, and denials. Cells coloured red when the failure or
+  blocked count is non-zero.
+* **Event-log health badge** — top-right of the panel. Shows
+  ``event-log ok · N events`` when ``SignedEventLog.verify_chain``
+  passes, or a screen-reader-assertive ``EVENT-LOG TAMPER DETECTED``
+  banner when the chain is broken. The badge never edits the log;
+  it only reads.
+
+### Bridge endpoints
+
+| Method | Path                              | Purpose                                                         |
+|-------:|-----------------------------------|-----------------------------------------------------------------|
+|  GET   | `/tasks?limit=N`                  | Newest-first list of redacted task summaries (default 50).      |
+|  GET   | `/tasks/{task_id}/replay`         | Redacted, ordered replay timeline for a task. 404 on unknown id. |
+|  GET   | `/reliability/health`             | `verify_chain()` result + record count + log path.              |
+|  GET   | `/reliability/counters`           | By-capability + workflow + memory aggregates across all tasks.  |
+
+All four are wrapped by Tauri commands `list_recent_tasks`,
+`fetch_replay`, `reliability_health`, `reliability_counters`.
+
+### How to test replay & reliability
+
+1. Run the unit tests:
+   ```powershell
+   python -m unittest discover -s services/orchestrator/tests -t services/orchestrator
+   ```
+   Replay/reliability tests live in `tests/test_reliability.py`.
+   They cover redaction (clipboard text, OCR text, transcripts,
+   screenshot bytes, file write content), replay shape, summary
+   rollups, by-capability counters across multiple tasks, event-log
+   health on a fresh log, on a tampered log, and the round-trip
+   shape of every bridge endpoint.
+
+2. With the bridge + HUD running, drive a few tasks (any mix —
+   a successful read, a Tier 2 approval, a failing OCR, a
+   workflow). Each lands on the trace.
+
+3. Open the **Replay & Reliability** panel. Click any row in
+   *Recent tasks* — the timeline below populates with redacted
+   events. The top-right health badge confirms the signed event
+   log is intact.
+
+4. **Tamper test (optional, destructive):** stop the bridge and
+   manually edit one byte of `runtime/events.jsonl`, then restart
+   the bridge. The badge should switch to the assertive
+   ``EVENT-LOG TAMPER DETECTED`` banner; the chain-verify endpoint
+   returns ``ok: false``.
+
+5. **Counters check:** the *Capability reliability* table updates
+   on every poll tick. Failures and blocks render in red — ideal
+   for spotting a flaky capability quickly.
+
+### What is redacted (and why)
+
+The replay output passes every event through a deterministic
+scrubber (`reliability._scrub_dict`). The following keys, when they
+carry a non-empty string or bytes value, are replaced with a small
+`<redacted: N chars>` / `<redacted: N bytes>` marker:
+
+* `text`, `transcript`, `raw_text`, `raw_audio`, `audio`,
+  `audio_base64`, `ocr_text`, `clipboard`, `screenshot_bytes`,
+  `png_bytes`, `content`, `excerpt`, `preview`, `snippets`,
+  `text_excerpt` / `textExcerpt`.
+
+Line/word lists are reduced to a `{"count": N}` shape — line counts
+are useful for review, line bodies are not.
+
+Free-form summary text on every replay event is clipped at 200
+characters; the task objective is clipped to 200 characters too.
+
+The scrubber is **idempotent** — running it twice produces the same
+result as running it once, so the same trace can be re-summarised
+without progressively masking the markers. (`<redacted: 19 chars>`
+will not become `<redacted: 19 chars>`-ad-infinitum.)
+
+What is NOT redacted (intentionally — these are the keys you need
+for debugging):
+
+* `capability`, `status`, `error_type`, `mode`, `byte_count`,
+  `char_count`, `line_count`, `width`, `height`, `dry_run`.
+* Verification keys: `verification.ok`, `verification.checked`,
+  `verification.mode`.
+* IDs: `task_id`, `action_id`, `approval_id`, `memory_id`.
+* Decision metadata: `decision.reason`, `decision.risk_tier`,
+  `decision.requires_approval`, `decision.blocked`.
+* URLs (without text body), file paths (without content body),
+  page titles.
+
+### Honest limitations
+
+* **Read-only summarisation.** This checkpoint is review/diagnostics
+  only. There is no autonomous remediation, no auto-cancel, and no
+  retry-on-failure. The Reflector still proposes lessons (curated
+  memory v1) but those go through human approval as before.
+* **In-memory tasks only.** `recent_task_summaries` walks
+  `supervisor.tasks`, which is the in-memory dict. Restarting the
+  bridge clears it. The signed event log on disk *is* persistent —
+  the health check + record count survive restarts — but the rich
+  trace structure is rebuilt only as new tasks run.
+* **No cross-session aggregation yet.** Counters are session-scoped.
+  A future checkpoint could parse `runtime/events.jsonl` to
+  reconstruct historic counters; v1 deliberately keeps the surface
+  small.
+* **Tamper detection, not tamper recovery.** A failed
+  `verify_chain` is surfaced loudly but the assistant does not
+  attempt to repair, replay, or roll back. That's a deliberate
+  conservative choice — repairing a signed log automatically would
+  destroy its evidentiary value.
+* **No external telemetry.** Nothing in this layer reports anywhere.
+  All endpoints are on `127.0.0.1:7821`. There is no opt-in cloud
+  reporting, no metrics push, no error tracker.
+* **Redaction is best-effort.** The scrubber catches the canonical
+  output keys produced by the existing capability adapters. If a
+  future adapter invents a new "user content" key, it must be
+  added to `_HARD_REDACT_KEYS` for the redactor to know about it.
+  When in doubt, prefer the same key names already in
+  `reflection.is_sensitive_payload`.
 

@@ -21,6 +21,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
+from .reliability import (
+    event_log_health,
+    recent_task_summaries,
+    reliability_counters,
+    task_replay,
+)
 from .voice import VoiceError
 
 PORT = 7821
@@ -450,6 +456,36 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                 self._send_error_json(404, f"Task {task_id!r} not found")
             except Exception as exc:
                 self._send_error_json(500, str(exc))
+        elif path.startswith("/tasks/") and path.endswith("/replay"):
+            task_id = path[len("/tasks/"):-len("/replay")]
+            if _api is None:
+                self._send_error_json(503, "Orchestrator not initialised")
+                return
+            task = _api.supervisor.tasks.get(task_id)
+            if task is None:
+                self._send_error_json(404, f"Task {task_id!r} not found")
+                return
+            self._send_json(task_replay(task))
+        elif path == "/tasks":
+            if _api is None:
+                self._send_error_json(503, "Orchestrator not initialised")
+                return
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                limit = int((qs.get("limit") or ["50"])[0])
+            except ValueError:
+                limit = 50
+            self._send_json({"items": recent_task_summaries(_api.supervisor.tasks, limit=limit)})
+        elif path == "/reliability/health":
+            if _api is None:
+                self._send_error_json(503, "Orchestrator not initialised")
+                return
+            self._send_json(event_log_health(_api.event_log))
+        elif path == "/reliability/counters":
+            if _api is None:
+                self._send_error_json(503, "Orchestrator not initialised")
+                return
+            self._send_json(reliability_counters(_api.supervisor.tasks))
         elif path == "/voice":
             if _api is None:
                 self._send_error_json(503, "Orchestrator not initialised")

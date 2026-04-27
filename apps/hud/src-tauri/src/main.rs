@@ -181,6 +181,27 @@ async fn memory_proposals() -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn list_recent_tasks(limit: Option<u32>) -> Result<Value, String> {
+    let qs = limit.map(|n| format!("?limit={}", n)).unwrap_or_default();
+    bridge_get(&format!("/tasks{}", qs)).await
+}
+
+#[tauri::command]
+async fn fetch_replay(task_id: String) -> Result<Value, String> {
+    bridge_get(&format!("/tasks/{}/replay", task_id)).await
+}
+
+#[tauri::command]
+async fn reliability_health() -> Result<Value, String> {
+    bridge_get("/reliability/health").await
+}
+
+#[tauri::command]
+async fn reliability_counters() -> Result<Value, String> {
+    bridge_get("/reliability/counters").await
+}
+
+#[tauri::command]
 async fn fetch_action(action_id: String) -> Result<Value, String> {
     bridge_get(&format!("/actions/{action_id}")).await
 }
@@ -299,6 +320,10 @@ fn main() {
             memory_reject,
             memory_expire,
             memory_proposals,
+            list_recent_tasks,
+            fetch_replay,
+            reliability_health,
+            reliability_counters,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Jarvis HUD");

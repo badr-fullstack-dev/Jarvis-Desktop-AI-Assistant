@@ -1,13 +1,22 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { HudState } from "./contracts";
+// Reliability views are also imported below (separate group) so the
+// dual-import doesn't conflict with the existing single-line above.
 import { ActionPanel } from "./ActionPanel";
 import { BrowserPanel } from "./BrowserPanel";
 import { DesktopPanel } from "./DesktopPanel";
 import { MemoryPanel } from "./MemoryPanel";
 import { PlanPanel } from "./PlanPanel";
+import { ReplayPanel } from "./ReplayPanel";
 import { VoicePanel } from "./VoicePanel";
 import { WorkflowPanel } from "./WorkflowPanel";
+import {
+  EventLogHealth,
+  ReliabilityCounters,
+  ReplayTimeline,
+  TaskSummaryView,
+} from "./contracts";
 
 type LiveHudState = HudState & { degraded?: boolean; degradedReason?: string };
 
@@ -45,6 +54,13 @@ export default function App() {
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [memoryBusy, setMemoryBusy] = useState<string | null>(null);
   const [memoryToast, setMemoryToast] = useState<string | null>(null);
+  // Reliability / replay state, kept in App so the polling loop refreshes
+  // it alongside the rest of the HUD state. None of these queries mutate.
+  const [recentTasks, setRecentTasks] = useState<TaskSummaryView[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedReplay, setSelectedReplay] = useState<ReplayTimeline | null>(null);
+  const [counters, setCounters] = useState<ReliabilityCounters | null>(null);
+  const [logHealth, setLogHealth] = useState<EventLogHealth | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(() => {
     try { return localStorage.getItem("jarvis.tts") !== "off"; } catch { return true; }
@@ -62,7 +78,47 @@ export default function App() {
     } catch (err) {
       setBridgeError(typeof err === "string" ? err : String(err));
     }
+    // Reliability data — polled alongside the main state. Failures are
+    // tolerated so a single broken endpoint does not freeze the HUD.
+    try {
+      const rs = await invoke<{ items: TaskSummaryView[] }>("list_recent_tasks", { limit: 25 });
+      setRecentTasks(rs.items || []);
+    } catch { /* tolerated */ }
+    try {
+      const c = await invoke<ReliabilityCounters>("reliability_counters");
+      setCounters(c);
+    } catch { /* tolerated */ }
+    try {
+      const h = await invoke<EventLogHealth>("reliability_health");
+      setLogHealth(h);
+    } catch { /* tolerated */ }
   }, []);
+
+  // Fetch a replay timeline for the selected task whenever it changes,
+  // and refresh it on every poll tick so live tasks update.
+  useEffect(() => {
+    if (!selectedTaskId) {
+      setSelectedReplay(null);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await invoke<ReplayTimeline>("fetch_replay", {
+          taskId: selectedTaskId,
+        });
+        if (!cancelled) setSelectedReplay(r);
+      } catch {
+        if (!cancelled) setSelectedReplay(null);
+      }
+    };
+    void load();
+    const id = window.setInterval(load, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [selectedTaskId]);
 
   useEffect(() => {
     refresh();
@@ -376,6 +432,15 @@ export default function App() {
           onExpire={onMemoryExpire}
           busyId={memoryBusy}
           lastAction={memoryToast}
+        />
+
+        <ReplayPanel
+          recent={recentTasks}
+          selectedTaskId={selectedTaskId}
+          selectedReplay={selectedReplay}
+          counters={counters}
+          health={logHealth}
+          onSelectTask={setSelectedTaskId}
         />
 
         <section className="panel panel-trace">

@@ -269,6 +269,76 @@ export interface HudState {
   desktop?: DesktopView | null;
 }
 
+export interface ReplayEvent {
+  index: number;
+  timestamp: string;
+  type: string;
+  capability: string | null;
+  status: string | null;
+  summary: string;
+  errorType: string | null;
+  verificationOk: boolean | null;
+  payload?: Record<string, unknown>;
+}
+
+export interface ReplayTimeline {
+  taskId: string;
+  objective: string;
+  source: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  events: ReplayEvent[];
+}
+
+export interface TaskSummaryView {
+  taskId: string;
+  objective: string;
+  source: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  actionCount: number;
+  failureCount: number;
+  approvalCount: number;
+  denialCount: number;
+  pendingApprovals: number;
+  workflows: string[];
+  lastCapability: string | null;
+}
+
+export interface CapabilityCounter {
+  executed: number;
+  failed: number;
+  blocked: number;
+  awaiting: number;
+}
+
+export interface ReliabilityCounters {
+  byCapability: Record<string, CapabilityCounter>;
+  totals: {
+    tasks: number;
+    actions: number;
+    failures: number;
+    approvals: number;
+    denials: number;
+    memoryProposed: number;
+    memoryApproved: number;
+    memoryRejected: number;
+    memoryExpired: number;
+  };
+  workflows: Record<string, { completed: number; failed: number }>;
+}
+
+export interface EventLogHealth {
+  ok: boolean;
+  recordCount: number;
+  lengthBytes: number;
+  lastEventAt: string | null;
+  logPath: string;
+  error?: string | null;
+}
+
 export type StructuredCapability =
   | "browser.navigate"
   | "browser.read_page"
