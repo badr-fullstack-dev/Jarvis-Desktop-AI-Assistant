@@ -49,6 +49,23 @@ export function ReplayPanel({
         <h2 id="replay-panel-heading">Replay & Reliability</h2>
         <HealthBadge health={health} />
       </div>
+      {/*
+        Per a11y review: render the polite live region unconditionally
+        with empty text when healthy; toggling textContent on a stable
+        node keeps assistive tech from racing the assertive `role="alert"`
+        tamper line above. The note is a STATE not an event so polite is
+        correct.
+      */}
+      <p
+        className={`replay-history-untrusted${
+          health && !health.ok ? "" : " sr-only"
+        }`}
+        aria-live="polite"
+      >
+        {health && !health.ok
+          ? "Restored history is not trusted while audit-log verification fails."
+          : ""}
+      </p>
 
       <h3 className="replay-section-heading">Recent tasks</h3>
       {recent.length === 0 ? (
@@ -81,6 +98,24 @@ export function ReplayPanel({
                       ? ` · ${t.pendingApprovals} pending`
                       : ""}
                   </span>
+                  {/*
+                    Restart-safety badges (Checkpoint 11). Plain text
+                    inside the button so the accessible name reads
+                    "objective. status … restored." in one stop. Kept
+                    as words (never color-only) and styled with both a
+                    visible border AND text contrast that exceeds 4.5:1
+                    against the panel background.
+                  */}
+                  {t.origin === "history" && (
+                    <span className="replay-task-badge replay-badge-restored">
+                      restored
+                    </span>
+                  )}
+                  {t.interrupted && (
+                    <span className="replay-task-badge replay-badge-interrupted">
+                      interrupted
+                    </span>
+                  )}
                 </button>
               </li>
             );

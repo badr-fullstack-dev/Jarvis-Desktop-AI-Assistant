@@ -1415,6 +1415,123 @@ for debugging):
   When in doubt, prefer the same key names already in
   `reflection.is_sensitive_payload`.
 
+## Durable history & restart safety (v1)
+
+The Replay & Reliability surface stays useful across bridge restarts.
+Recent task summaries, replay timelines, and reliability counters are
+persisted to `runtime/history/` as a redacted, derived index. The
+signed audit log (`runtime/events.jsonl`) is still the source of
+truth — `runtime/history/` is convenience data and is rebuildable
+from the audit log.
+
+What lives under `runtime/history/`:
+
+```
+runtime/history/
+├── tasks.json            # newest-first list of redacted task summaries
+├── replays/<task-id>.json # one redacted replay timeline per task
+├── counters.json         # persisted by-capability + total counters
+└── state.json            # health status, schema version, load info
+```
+
+All four files are git-ignored and never leave your machine.
+
+### What persists across restart
+
+* The **redacted** output of `reliability.task_summary`,
+  `reliability.task_replay`, and `reliability.reliability_counters`
+  for every task this install has seen.
+* Schema-versioned envelopes so future migrations are possible.
+* Atomic writes (write to `*.tmp`, then `os.replace`) — a crash
+  mid-write never corrupts the live file.
+
+### What does NOT auto-resume
+
+This is the load-bearing rule of Checkpoint 11:
+
+* **No action runs as a side effect of startup.** The supervisor's
+  in-memory `tasks` map starts empty after a restart. Nothing on disk
+  re-injects a task into the live runtime.
+* **No restored approval is executable.** A task that had a pending
+  approval at the previous shutdown comes back marked `interrupted`
+  with `pendingApprovals: 0` and the approval id is **not** carried
+  across — the only way to act on it is to re-submit the original
+  request, which will produce a fresh approval request through
+  `ActionGateway` / `PolicyEngine`.
+* **No workflow auto-continues.** Workflows that were `running` or
+  `waiting_for_approval` at write-time are flagged `interrupted` in
+  the restored timeline. They are review-only; resuming requires
+  re-issuing the request.
+
+### Audit log vs derived history
+
+| | `runtime/events.jsonl` | `runtime/history/` |
+|---|---|---|
+| Role | Source of audit truth | Derived convenience cache |
+| Integrity | HMAC-chained, `verify_chain` checked at every startup | Redacted snapshots; tolerates corruption by rebuilding |
+| Privacy | Already redacted via `reliability._scrub_dict` at append | Same redactor, applied again as defence-in-depth |
+| Git | Ignored | Ignored |
+
+If `verify_chain` fails on startup, the bridge enters **untrusted**
+mode: history is still loaded so the HUD has something to show, but
+`/reliability/health` reports `history.trusted: false` and the panel
+displays "Restored history is not trusted while audit-log
+verification fails." next to the existing tamper alert. Nothing
+silently rebuilds over the problem.
+
+### How to safely reset derived history
+
+The derived history can be wiped without touching the audit log:
+
+```powershell
+Remove-Item -Recurse -Force runtime/history
+```
+
+The bridge will start clean on the next launch, mark
+`history.status = "ok"` once the first new task lands, and the audit
+log keeps its full record. **Do not** delete `runtime/events.jsonl`
+— that is the audit log; deleting it is irreversible and breaks
+the verification chain for everything that came before.
+
+### `/reliability/counters` is now cross-session
+
+The counters endpoint returns the merged view across the live
+session and persisted history with a `source` field that can be
+`"session"`, `"history"`, or `"mixed"`. The HUD uses
+`historyTrusted`, `currentSessionTaskCount`, and `restoredTaskCount`
+to render the right context label. Live in-memory counters always
+win for tasks present in the current process; history-only tasks
+are additive.
+
+### Dev loop
+
+Day-to-day development uses the `dev_watch` runner, which starts the
+bridge, watches every Python file under `services/orchestrator/src/`
+(including `history.py`) plus `configs/`, and restarts the bridge
+automatically on save:
+
+```powershell
+python -m jarvis_core.dev_watch --port 7821
+```
+
+Manual restart is only required when you change `dev_watch.py`
+itself, the system Python interpreter, or external tools the bridge
+depends on. Routine backend edits — handlers, capabilities, history
+schema — are picked up automatically.
+
+### Limits (honest)
+
+* Counters are exact for actions seen by *this* install. We do not
+  attempt to reconstruct counters across deleted-and-recreated
+  history, even when the audit log would technically allow it —
+  rebuilding from the log is conservative and starts empty.
+* Pending-approval recovery across restart is by design *not*
+  supported. Carrying approval ids across a process boundary would
+  let a stale id be used to authorise an action the original
+  policy decision may no longer cover.
+* Schema version bumps require an explicit migration. v1 tolerates
+  any unknown schema as "rebuild from clean".
+
 ## License
 
 This repository is public for portfolio/client review only. The code is

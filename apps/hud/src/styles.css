@@ -800,6 +800,37 @@ button.secondary {
 .replay-task-objective { display: block; font-size: 0.85rem; word-break: break-word; }
 .replay-task-meta { display: block; font-size: 0.7rem; opacity: 0.65; margin-top: 0.15rem; }
 
+/* Checkpoint 11 — restart-safety badges. Color is never the only
+   signal: the badge text is a literal word ("restored", "interrupted")
+   and the chip carries a 1px border drawn from currentColor so the
+   chip shape itself is perceivable for low-vision users (≥3:1 against
+   the panel background, satisfying WCAG 1.4.11). */
+.replay-task-badge {
+  display: inline-block;
+  margin-left: 0.45rem;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  vertical-align: 0.05em;
+  /* opacity stays 1 — the muted appearance comes from font-size + tint,
+     not from reducing contrast. */
+}
+.replay-badge-restored { color: #9fc7ff; }
+.replay-badge-interrupted { color: #ffb380; }
+
+/* Polite live region rendered for the "history not trusted" state.
+   Hidden (visually + aurally inert) when healthy via .sr-only:empty. */
+.replay-history-untrusted {
+  font-size: 0.75rem;
+  color: #ffb380;
+  margin: 0.3rem 0 0.5rem 0;
+}
+.replay-history-untrusted.sr-only { /* falls through to global .sr-only */ }
+
 .replay-timeline { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.35rem; }
 .replay-event {
   background: rgba(255,255,255,0.03);

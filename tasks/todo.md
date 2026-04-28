@@ -201,6 +201,116 @@ No follow-ups left for this checkpoint. Natural next steps: (a) parse persistent
 
 ---
 
+## Checkpoint 11 — Durable session history & restart-safe replay (started 2026-04-28)
+
+### Plan
+
+#### Hard rules (re-state before I touch anything)
+- No auto-resume / no auto-execute after restart.
+- Pending approvals from a previous process come back as "interrupted" — never as live executable buttons.
+- No raw user content to disk: clipboard bodies, OCR text, transcripts, screenshots bytes, audio, file-write content, browser excerpts, unredacted capability outputs.
+- Reuse the same `_HARD_REDACT_KEYS` set as `reliability.py` / `reflection.py`. If a new user-content key comes up, add it to **both** redactors.
+- Signed event log stays the source of audit truth. `runtime/history/` is *derived* and rebuildable.
+- If `verify_chain()` fails on startup, history is marked **untrusted** — `/reliability/health` says so and the HUD shows it.
+
+#### Backend: new `history.py` module
+- [x] `services/orchestrator/src/jarvis_core/history.py`. Schema-versioned (`{"schema_version": 1, ...}`).
+- [x] Files under `runtime/history/`:
+  - `tasks.json` — newest-first list of redacted task summaries.
+  - `replays/<task-id>.json` — one redacted replay timeline per task.
+  - `counters.json` — persisted reliability counters.
+  - `state.json` — `{health: ok|untrusted|rebuilt, last_event_signature, schema_version, generated_at}`.
+- [ ] Atomic writes: write to `*.tmp` then `os.replace`. fsync on best-effort.
+- [ ] Strict task-id validation (UUID-ish only — already enforced by `models.new_id`; reject anything else when reading filenames). Never path-join user-supplied strings.
+- [ ] `record_task_update(task)` and `record_counters(...)` — used by the supervisor hook. Both call into the existing `_scrub_dict` / `task_replay` / `task_summary` / `reliability_counters` so we *cannot* re-implement redaction with weaker rules.
+- [ ] `load_history(runtime_path)` returns `HistorySnapshot(state, tasks, replays_index, counters)`. Corrupt JSON → return empty snapshot + state.health = "rebuilt" with a clear reason. Schema mismatch → same.
+- [ ] `prune(limit=200)` — keep newest N task entries; drop older `replays/<id>.json` files. Ship with a sane default.
+
+#### Persisting redacted data as tasks run
+- [ ] Hook into `SupervisorRuntime` via a new `HistoryRecorder` callback (one-line `task.touch()` extension OR an explicit `supervisor.notify_task_changed(task)` call). I'll prefer the explicit notify — it keeps the recorder out of the hot path of every `task.touch()`.
+- [ ] Recorder updates `tasks.json` and `replays/<id>.json` on every meaningful trace change, debounced if needed (atomic write per change is fine for v1; debouncing is a follow-up if it shows up in profiling).
+- [ ] Recorder runs the same `_scrub_dict` already used by `task_replay`. Do not duplicate raw `TaskRecord` objects to disk — only the output of `task_replay()` and `task_summary()`.
+- [ ] Workflow status that's `waiting_for_approval` or `running` at write time gets persisted with `interrupted_marker: false`. On startup the loader flips that to `interrupted_marker: true` for any workflow not also live in memory.
+
+#### Startup behavior in `LocalSupervisorAPI.__init__`
+- [ ] After constructing `event_log`, call `event_log.verify_chain()`.
+- [ ] If healthy: `load_history()` → store on `self.history`. `state.health = "ok"`.
+- [ ] If history missing/corrupt/schema-mismatch (but log healthy): minimal rebuild from `events.jsonl` if practical; otherwise start empty with `state.health = "rebuilt"` and a reason string. **Never silently overwrite a clean history with an empty one.**
+- [ ] If log unhealthy: `state.health = "untrusted"`. Do NOT trust history. `/reliability/health` returns ok=false, history.trusted=false, with the verifier reason.
+- [ ] Pending approvals from supervisor.tasks at startup are empty (they're session-scoped). History-only tasks never expose executable approval buttons — that's by construction since approval IDs are not persisted as actionable.
+
+#### Cross-session reliability counters
+- [ ] `reliability_counters_combined(session_tasks, history)` — merges in-memory counters with persisted counters. Adds `source: "session" | "history" | "mixed"` so the HUD is honest.
+- [ ] `/reliability/counters` returns the combined view by default.
+
+#### Bridge endpoints (stable surface, no breaking changes)
+- [ ] `GET /tasks?limit=N` — merges live and historical, dedup by task_id, newest first.
+- [ ] `GET /tasks/{id}/replay` — prefer in-memory `TaskRecord`; fall back to `runtime/history/replays/<id>.json`. Same redacted shape either way.
+- [ ] `GET /reliability/counters` — combined view, plus `source` field.
+- [ ] `GET /reliability/health` — extended with `history: {trusted, source, schema_version, last_loaded_at}`.
+
+#### HUD updates (TSX edits — accessibility-lead pre-review required)
+- [ ] Tag each task in the recent list with a tiny badge: `current` | `restored` | `interrupted`. Use `<span>` with `aria-label` set so screen readers don't drop the meaning.
+- [ ] When `health.history.trusted === false`, show the existing tamper alert + a short note: "Restored history is not trusted while audit log verification fails." (`role="alert"` on the security signal, polite live region for the explanation.)
+- [ ] No new panels. Just badges + the additional health note. Keep noise low.
+- [ ] **Pre-delegate to accessibility-lead before any TSX edit**, with the concrete markup. Apply must-fixes before merging.
+
+#### Dev-watch
+- [ ] Add `history.py` to the watched module list. The existing module-discovery code already globs `jarvis_core/*.py`, so verify that — if it doesn't, extend it.
+- [ ] Document the dev loop in README: `python -m jarvis_core.dev_watch` watches all backend modules; bridge restart is automatic on save. Manual restart only required for `dev_watch.py` itself or external tooling.
+
+#### Tests (Python `unittest`, not pytest)
+- [ ] `test_history_redaction.py` — every `_HARD_REDACT_KEYS` family is stripped from `tasks.json` and `replays/<id>.json`. Idempotency: reload + re-save, no drift.
+- [ ] `test_history_atomic.py` — simulate write crash mid-`*.tmp`, confirm the final file is untouched.
+- [ ] `test_history_restart.py` — submit tasks, tear down `LocalSupervisorAPI`, build a new one against the same runtime root, recent tasks survive, replay endpoint works for restored task.
+- [ ] `test_history_counters.py` — counters persist across restart and `source` field flips appropriately.
+- [ ] `test_history_tamper.py` — corrupt last line of `events.jsonl`, restart, expect `state.health == "untrusted"`, `/reliability/health.history.trusted == false`, history not silently rebuilt.
+- [ ] `test_history_corrupt.py` — write a bad `tasks.json`, restart, expect graceful empty state and a clear reason, not a crash.
+- [ ] `test_history_interrupted_workflow.py` — workflow `waiting_for_approval` at write time, restart, comes back as `interrupted` with no executable approval button (verified at the bridge JSON layer).
+- [ ] `test_history_no_user_content.py` — task with clipboard/OCR/transcript/file-content/screenshot payloads in trace, restart, ensure raw bytes/text are nowhere in `runtime/history/**`. Grep-style assertion over the JSON.
+- [ ] All existing 294 tests still pass.
+
+#### Documentation
+- [ ] README new section "Durable history & restart safety (v1)":
+  - what persists (redacted summaries, replay timelines, counters);
+  - what does NOT auto-resume (actions, approvals, workflows);
+  - the difference between the signed audit log and derived history;
+  - how to safely reset derived history (`rm -rf runtime/history/`) without harming the audit log;
+  - dev_watch loop and the rare cases where manual restart is needed.
+
+#### Order of work
+1. Brainstorm/design `history.py` module + state schema. Land tests `test_history_redaction.py`, `test_history_atomic.py`, `test_history_corrupt.py` first (TDD on the data layer).
+2. Add the `HistoryRecorder` hook into `LocalSupervisorAPI` + `SupervisorRuntime`. Land `test_history_restart.py`, `test_history_no_user_content.py`, `test_history_counters.py`.
+3. Tamper / unhealthy-log flow + `/reliability/health` extension. Land `test_history_tamper.py`.
+4. Workflow interrupted flow. Land `test_history_interrupted_workflow.py`.
+5. Bridge endpoint changes (combined view).
+6. Pre-delegate to accessibility-lead with the concrete badge markup. Apply feedback. Then HUD TSX edits.
+7. README section.
+8. Run full suite locally on Windows + push and verify CI green.
+
+### Review
+
+Shipped a redacted, derived history layer at `services/orchestrator/src/jarvis_core/history.py`, hooked through a new `SupervisorRuntime.notify_task_changed(task)` callback set by `LocalSupervisorAPI`. Every task-mutation site (`submit_task`, `request_action`, `propose_action`, `approve_and_execute`, `deny_approval`, `cancel_task`, `resume_task`, plus the workflow trace mutations in `api.submit_voice_or_text_task` / `approve_and_execute` / `deny_approval`) calls the recorder. The recorder feeds `task_summary` and `task_replay` through the central `_scrub_dict` redactor and writes atomic JSON under `runtime/history/`. Bridge endpoints `/tasks`, `/tasks/{id}/replay`, `/reliability/counters`, `/reliability/health` were extended in place — same URLs, additive shape with `origin`, `interrupted`, `source`, `historyTrusted`, `currentSessionTaskCount`, `restoredTaskCount`. ReplayPanel.tsx gained `restored` / `interrupted` plain-text badges (no color-only signaling, 4.5:1 text + 3:1 chip border per a11y review) and an unconditionally-rendered polite live region that surfaces "Restored history is not trusted while audit-log verification fails." when `verify_chain` fails. README gained a 100-line "Durable history & restart safety (v1)" section covering what persists, what does not auto-resume, the audit-log-vs-history table, the safe reset command, and the dev_watch loop.
+
+Hard rules verified by tests (17 new across `test_history.py`, full suite 311/311 OK):
+- redaction over every `_HARD_REDACT_KEYS` family — no raw clipboard, OCR, transcript, audio, screenshot bytes, file content, or excerpt text leaks into `runtime/history/**`;
+- atomic write — `os.replace` failure leaves the live file untouched and no orphan `*.tmp`;
+- corrupt `tasks.json` / schema mismatch / hostile filename → graceful empty + `state.health = "rebuilt"`;
+- tampered `events.jsonl` → `state.health = "untrusted"`, history not silently rebuilt;
+- pending approval at write-time → restored as `interrupted`, `pendingApprovals = 0`, no executable approval id carried across;
+- counter merge across session/history with the mixed policy returns the right `source` and `restoredTaskCount`/`currentSessionTaskCount`.
+
+What got cut for v1:
+- explicit log-replay rebuild path (the loader already starts empty on corruption — log-driven rebuild is left for a follow-up checkpoint that wants exact counter recovery across deleted history);
+- debounced writes (current path writes per task mutation, which is fine at the supervisor task volume — revisit if profiling shows it);
+- exposing `history.status` / `lastWriteAt` directly in the HUD beyond the existing tamper alert (the polite note covers the user-visible case; the rest is on `/reliability/health` for debuggers).
+
+Accessibility-lead pre-review of the badge + live-region markup applied verbatim: badges are plain-text words inside the existing `<button>` so the accessible name reads as one stop; the polite `<p>` is rendered unconditionally with empty text when healthy (sr-only) so the assertive tamper alert does not race the polite supplementary note; chip border drawn from `currentColor` keeps the chip shape perceivable for low-vision users. No `aria-hidden`, no `aria-disabled`, no color-only signaling.
+
+Natural follow-ups: (a) audit-log-driven rebuild for installs that wipe `runtime/history/` but keep `events.jsonl`; (b) a "history reset" button on the panel that confirms before deleting, instead of requiring a shell command; (c) HUD-side dedicated "Interrupted tasks" subsection if the restored-task volume gets large enough to need it.
+
+---
+
 ## Ongoing / future
 
 See the "Next recommended step" list in `README.md`. Currently open:

@@ -21,11 +21,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
+from .history import (
+    HistorySnapshot,
+    HistoryStore,
+    history_only_counters,
+    merge_counters,
+)
 from .reliability import (
     event_log_health,
     recent_task_summaries,
     reliability_counters,
     task_replay,
+    task_summary,
 )
 from .voice import VoiceError
 
@@ -385,6 +392,73 @@ def _build_hud_state() -> Dict[str, Any]:
 # HTTP handler
 # ---------------------------------------------------------------------------
 
+def _merged_recent_tasks(api: Any, *, limit: int) -> List[Dict[str, Any]]:
+    """Return newest-first recent tasks across live + restored history.
+
+    Live in-memory ``TaskRecord`` instances win for any overlap; tasks
+    that exist only in persisted history are appended below them and
+    carry ``origin: "history"`` plus any ``interrupted`` markers.
+    """
+    live_summaries = recent_task_summaries(api.supervisor.tasks, limit=limit)
+    for summary in live_summaries:
+        summary["origin"] = "session"
+        summary["interrupted"] = False
+
+    history = getattr(api, "history_snapshot", None)
+    if history is None:
+        return live_summaries[:limit]
+
+    live_ids = {s.get("taskId") for s in live_summaries}
+    restored: List[Dict[str, Any]] = []
+    for summary in history.tasks:
+        tid = summary.get("taskId")
+        if tid in live_ids or not isinstance(tid, str):
+            continue
+        restored_entry = dict(summary)
+        restored_entry["origin"] = "history"
+        restored.append(restored_entry)
+
+    combined = live_summaries + restored
+    # Newest-first by createdAt; ties keep insertion order so live
+    # summaries naturally dominate.
+    combined.sort(key=lambda s: s.get("createdAt") or "", reverse=True)
+    return combined[:limit]
+
+
+def _combined_counters(api: Any) -> Dict[str, Any]:
+    """Return reliability counters merged across session and history.
+
+    See ``history.merge_counters``. The HUD relies on ``source``,
+    ``historyTrusted``, ``currentSessionTaskCount``, and
+    ``restoredTaskCount`` to render the right context label.
+    """
+    session_counters = reliability_counters(api.supervisor.tasks)
+    history = getattr(api, "history_snapshot", None)
+    history_store = getattr(api, "history_store", None)
+    history_trusted = (
+        history_store is not None and history_store.health.status == "ok"
+    )
+    if history is None:
+        out = dict(session_counters)
+        out["source"] = "session"
+        out["historyTrusted"] = history_trusted
+        out["currentSessionTaskCount"] = len(api.supervisor.tasks)
+        out["restoredTaskCount"] = 0
+        return out
+
+    live_ids = list(api.supervisor.tasks.keys())
+    history_ids = [t.get("taskId") for t in history.tasks
+                   if isinstance(t.get("taskId"), str)]
+    history_counters = history_only_counters(history, live_ids)
+    return merge_counters(
+        session=session_counters,
+        history=history_counters,
+        session_task_ids=live_ids,
+        history_task_ids=history_ids,
+        history_trusted=history_trusted,
+    )
+
+
 def _run_async(coro: Any) -> Any:
     loop = asyncio.new_event_loop()
     try:
@@ -461,11 +535,33 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             if _api is None:
                 self._send_error_json(503, "Orchestrator not initialised")
                 return
+            # Live in-memory task wins (current session). On miss, fall
+            # back to the persisted, redacted history snapshot. The
+            # restored copy carries the same redaction and adds an
+            # ``origin`` marker so the HUD can render a "restored"
+            # badge instead of pretending it's live.
             task = _api.supervisor.tasks.get(task_id)
-            if task is None:
-                self._send_error_json(404, f"Task {task_id!r} not found")
+            if task is not None:
+                payload = task_replay(task)
+                payload["origin"] = "session"
+                self._send_json(payload)
                 return
-            self._send_json(task_replay(task))
+            history = getattr(_api, "history_snapshot", None)
+            if history is not None:
+                replay = history.replays.get(task_id)
+                if replay is not None:
+                    payload = dict(replay)
+                    interrupted = next(
+                        (t for t in history.tasks
+                         if t.get("taskId") == task_id), None)
+                    payload["origin"] = "history"
+                    if interrupted and interrupted.get("interrupted"):
+                        payload["interrupted"] = True
+                        payload["interruptedReason"] = interrupted.get(
+                            "interruptedReason")
+                    self._send_json(payload)
+                    return
+            self._send_error_json(404, f"Task {task_id!r} not found")
         elif path == "/tasks":
             if _api is None:
                 self._send_error_json(503, "Orchestrator not initialised")
@@ -475,17 +571,23 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                 limit = int((qs.get("limit") or ["50"])[0])
             except ValueError:
                 limit = 50
-            self._send_json({"items": recent_task_summaries(_api.supervisor.tasks, limit=limit)})
+            self._send_json({
+                "items": _merged_recent_tasks(_api, limit=limit),
+            })
         elif path == "/reliability/health":
             if _api is None:
                 self._send_error_json(503, "Orchestrator not initialised")
                 return
-            self._send_json(event_log_health(_api.event_log))
+            payload = event_log_health(_api.event_log)
+            history_store = getattr(_api, "history_store", None)
+            if history_store is not None:
+                payload["history"] = history_store.health.to_dict()
+            self._send_json(payload)
         elif path == "/reliability/counters":
             if _api is None:
                 self._send_error_json(503, "Orchestrator not initialised")
                 return
-            self._send_json(reliability_counters(_api.supervisor.tasks))
+            self._send_json(_combined_counters(_api))
         elif path == "/voice":
             if _api is None:
                 self._send_error_json(503, "Orchestrator not initialised")

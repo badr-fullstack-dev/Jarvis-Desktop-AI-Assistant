@@ -305,6 +305,26 @@ export interface TaskSummaryView {
   pendingApprovals: number;
   workflows: string[];
   lastCapability: string | null;
+  // Checkpoint 11: present when the bridge merges live + restored
+  // history. "session" = live in this process; "history" = restored
+  // from runtime/history/ on disk. Tasks restored from history can
+  // additionally be flagged interrupted if they were in-flight or
+  // had a pending approval at the prior shutdown — the underlying
+  // approval id is NOT carried across, by design.
+  origin?: "session" | "history";
+  interrupted?: boolean;
+  interruptedReason?: string | null;
+}
+
+export interface HistoryHealthView {
+  status: "ok" | "rebuilt" | "untrusted" | "unwritable";
+  reason: string | null;
+  schemaVersion: number;
+  lastLoadedAt: string | null;
+  lastWriteAt: string | null;
+  writeError: string | null;
+  restoredTaskCount: number;
+  trusted: boolean;
 }
 
 export interface CapabilityCounter {
@@ -337,6 +357,11 @@ export interface EventLogHealth {
   lastEventAt: string | null;
   logPath: string;
   error?: string | null;
+  // Checkpoint 11: present when the bridge runs with a HistoryStore.
+  // When `history.trusted === false` the HUD shows that restored
+  // history is not authoritative (the audit chain failed verify or
+  // history files were rebuilt from corruption).
+  history?: HistoryHealthView | null;
 }
 
 export type StructuredCapability =

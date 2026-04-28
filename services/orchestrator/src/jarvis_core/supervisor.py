@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .blackboard import Blackboard
 from .event_log import SignedEventLog
@@ -33,6 +33,44 @@ class SupervisorRuntime:
         # re-proposed after every action when the reflector runs more
         # than once during a task's lifetime.
         self._reflected_keys: Dict[str, set] = {}
+        # Optional callback invoked at every task-mutation boundary so a
+        # disk-backed history layer can persist a redacted snapshot.
+        # See ``api.LocalSupervisorAPI._record_task_history``. None when
+        # no history layer is wired (tests, headless usage).
+        self._history_recorder: Optional[Callable[[TaskRecord], None]] = None
+
+    def set_history_recorder(
+        self, recorder: Optional[Callable[[TaskRecord], None]]
+    ) -> None:
+        """Register (or clear) the history recorder callback.
+
+        The recorder is called *after* a task is mutated and the audit
+        log entry is appended, so on-disk history always reflects state
+        already committed to the signed log. Recorder errors must not
+        propagate — they're captured by the recorder itself and exposed
+        on history health metadata.
+        """
+        self._history_recorder = recorder
+
+    def notify_task_changed(self, task: TaskRecord) -> None:
+        """Invoke the history recorder for ``task``, swallowing failures.
+
+        Call this from every task-mutation site (submit, propose,
+        approve/deny, action result, workflow transition, memory
+        lifecycle when reflected on the trace). Failure to persist must
+        not block the supervisor's primary path; the recorder is
+        responsible for surfacing the error via history health.
+        """
+        recorder = self._history_recorder
+        if recorder is None:
+            return
+        try:
+            recorder(task)
+        except Exception:
+            # Defence in depth — the recorder already wraps its own
+            # body, but we never let a persistence mishap take down
+            # an action that was already committed to the audit log.
+            pass
 
     async def submit_task(self, objective: str, source: str = "text", context: Optional[Dict[str, object]] = None) -> TaskRecord:
         task = TaskRecord(objective=objective, source=source, status=TaskStatus.RUNNING, context=dict(context or {}))
@@ -48,6 +86,7 @@ class SupervisorRuntime:
         task.status = TaskStatus.BLOCKED if task.approvals else TaskStatus.RUNNING
         task.touch()
         self.event_log.append("task.analyzed", {"task_id": task.task_id, "trace": task.trace, "plan": task.plan})
+        self.notify_task_changed(task)
         return task
 
     def request_action(self, proposal: ActionProposal, approved: bool = False) -> ActionResult:
@@ -85,6 +124,7 @@ class SupervisorRuntime:
             task.trace.append({"event": "action.executed", "result": result.to_dict()})
             task.touch()
             self._curate_lessons(task, result)
+        self.notify_task_changed(task)
         return result
 
     # ------------------------------------------------------------------
@@ -116,6 +156,7 @@ class SupervisorRuntime:
             }
             self.pending_proposals[proposal.action_id] = proposal
             status = "blocked" if decision.blocked else "awaiting_approval"
+            self.notify_task_changed(task)
             return {"status": status, "decision": decision.to_dict(),
                     "approval": approval.to_dict(), "action_id": proposal.action_id}
 
@@ -135,6 +176,7 @@ class SupervisorRuntime:
             task.trace.append({"event": "action.executed", "result": result.to_dict()})
             task.touch()
             self._curate_lessons(task, result)
+        self.notify_task_changed(task)
         return {"status": result.status, "decision": decision.to_dict(),
                 "result": result.to_dict(), "action_id": proposal.action_id}
 
@@ -164,6 +206,7 @@ class SupervisorRuntime:
             task.touch()
 
         self._consume_approval(approval_id)
+        self.notify_task_changed(task)
         return result
 
     def deny_approval(self, approval_id: str, reason: str = "") -> Dict[str, object]:
@@ -185,6 +228,7 @@ class SupervisorRuntime:
         task.touch()
         self.event_log.append("approval.denied", denial_payload)
         self._consume_approval(approval_id)
+        self.notify_task_changed(task)
         return denial_payload
 
     def list_pending_approvals(self) -> List[Dict[str, object]]:
@@ -222,6 +266,7 @@ class SupervisorRuntime:
         task.status = TaskStatus.CANCELLED
         task.touch()
         self.event_log.append("task.cancelled", task.to_dict())
+        self.notify_task_changed(task)
         return task
 
     def inspect_task(self, task_id: str) -> Dict[str, object]:
@@ -232,6 +277,7 @@ class SupervisorRuntime:
         task.status = TaskStatus.RUNNING
         task.touch()
         self.event_log.append("task.resumed", task.to_dict())
+        self.notify_task_changed(task)
         return task
 
     def fetch_trace(self, task_id: str) -> List[Dict[str, object]]:

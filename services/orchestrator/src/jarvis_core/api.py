@@ -14,12 +14,18 @@ from .capabilities import (
 )
 from .event_log import SignedEventLog
 from .gateway import ActionGateway
+from .history import HistorySnapshot, HistoryStore
 from .memory import MemoryStore
 from .models import ActionProposal
 from .ocr_providers import build_ocr_provider_from_env
 from .planner import MAPPED, DeterministicPlanner, PlanResult
 from .policy import PolicyEngine
 from .reflection import ApprovedMemoryHints
+from .reliability import (
+    reliability_counters,
+    task_replay,
+    task_summary,
+)
 from .supervisor import SupervisorRuntime
 from .voice import VoiceSession
 from .voice_providers import build_provider_from_env
@@ -108,6 +114,38 @@ class LocalSupervisorAPI:
             sandbox_root=sandbox_path,
         )
         self.supervisor = SupervisorRuntime(self.gateway, self.memory, self.event_log)
+
+        # ----- Durable derived history (Checkpoint 11) ---------------
+        # The signed event log is still the source of audit truth; this
+        # store is a redacted, rebuildable cache so the HUD's recent
+        # tasks / replay / counters survive bridge restarts. We verify
+        # the audit chain BEFORE trusting any persisted history. If the
+        # chain is broken we still load the snapshot so the HUD can
+        # show "untrusted" rather than blank, but every consumer will
+        # know not to treat it as authoritative via /reliability/health.
+        self.history_store = HistoryStore(runtime_path)
+        try:
+            chain_ok = self.event_log.verify_chain()
+            chain_error: Optional[str] = None
+        except Exception as exc:  # pragma: no cover — defensive
+            chain_ok = False
+            chain_error = str(exc)
+        self.history_snapshot: HistorySnapshot = self.history_store.load()
+        if not chain_ok:
+            self.history_store.mark_untrusted(
+                chain_error or "audit log verify_chain returned False")
+        # Tasks restored from history were not in this process's
+        # supervisor.tasks at startup, so they're flagged interrupted
+        # if they were in-flight or had a pending approval. No live
+        # state — purely review markers for the HUD.
+        self.history_store.mark_interrupted(
+            self.history_snapshot,
+            live_task_ids=list(self.supervisor.tasks.keys()),
+        )
+        # Wire the supervisor's notify hook so subsequent task
+        # mutations land in history. The hook is a no-op when history
+        # is unwritable; errors surface on history_store.health.
+        self.supervisor.set_history_recorder(self._record_task_history)
         # Voice session is off-by-state (idle) and requires explicit start().
         # No microphone access happens here; the HUD is the only recorder.
         # The transcription provider is selected from environment variables
@@ -127,6 +165,37 @@ class LocalSupervisorAPI:
         # so ActionGateway/PolicyEngine/approvals/audit still apply.
         self.workflow_planner = WorkflowPlanner()
         self.workflow_runner = WorkflowRunner(self.supervisor.propose_action)
+
+    # ------------------------------------------------------------------
+    # History recorder hook. Called by the supervisor at every
+    # task-mutation boundary. We re-derive the redacted summary +
+    # replay through the same `reliability` helpers used by
+    # /tasks endpoints, so persisted JSON cannot diverge from what
+    # the HUD already knows how to render.
+    # ------------------------------------------------------------------
+    def _record_task_history(self, task) -> None:
+        try:
+            summary = task_summary(task)
+            replay = task_replay(task)
+        except Exception as exc:  # defensive — never let a recorder
+            # mishap take the supervisor down with it.
+            self.history_store.health.status = "unwritable"
+            self.history_store.health.write_error = str(exc)
+            self.history_store.health.reason = (
+                f"could not derive summary/replay: {exc}")
+            return
+        self.history_store.write_task(summary, replay, self.history_snapshot)
+        # Keep persisted counters fresh too — cheap because supervisor
+        # task volume per session is small. If this becomes a hot
+        # path, debounce here.
+        try:
+            counters = reliability_counters(self.supervisor.tasks)
+            self.history_store.write_counters(counters, self.history_snapshot)
+        except Exception as exc:
+            self.history_store.health.status = "unwritable"
+            self.history_store.health.write_error = str(exc)
+            self.history_store.health.reason = (
+                f"could not derive counters: {exc}")
 
     async def submit_voice_or_text_task(self, objective: str, source: str = "text", context: Optional[Dict[str, object]] = None):
         task = await self.supervisor.submit_task(objective=objective, source=source, context=context)
@@ -158,6 +227,7 @@ class LocalSupervisorAPI:
                 "task_id": task.task_id,
                 "workflow": workflow.to_dict(),
             })
+            self.supervisor.notify_task_changed(task)
             return task
 
         # 2) Fall back to the single-step deterministic planner.
@@ -179,6 +249,10 @@ class LocalSupervisorAPI:
             # Tier 2 queues an approval; blocked patterns are refused.
             # Nothing bypasses ActionGateway or PolicyEngine.
             self._auto_propose_from_plan(task.task_id, plan)
+        else:
+            # Even when nothing auto-runs, the plan trace mutated the
+            # task — persist that.
+            self.supervisor.notify_task_changed(task)
 
         return task
 
@@ -207,6 +281,7 @@ class LocalSupervisorAPI:
                     "task_id": wf.task_id,
                     "workflow": wf.to_dict(),
                 })
+                self.supervisor.notify_task_changed(task)
         return result
 
     def deny_approval(self, approval_id: str, reason: str = ""):
@@ -226,6 +301,7 @@ class LocalSupervisorAPI:
                     "task_id": wf.task_id,
                     "workflow": wf.to_dict(),
                 })
+                self.supervisor.notify_task_changed(task)
         return payload
 
     def submit_action(self, proposal: ActionProposal, approved: bool = False):
