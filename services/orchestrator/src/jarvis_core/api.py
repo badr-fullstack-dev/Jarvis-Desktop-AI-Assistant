@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import secrets
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -24,6 +26,47 @@ from .voice_providers import build_provider_from_env
 from .workflow import WorkflowPlanner, WorkflowRunner
 
 
+_AUDIT_KEY_FILENAME = "audit.key"
+
+
+def _load_or_create_audit_secret(runtime_path: Path) -> str:
+    """Return the HMAC secret used to sign the local audit log.
+
+    Resolution order:
+      1. ``JARVIS_AUDIT_SECRET`` environment variable, if non-empty.
+      2. ``<runtime>/audit.key`` if it exists.
+      3. Otherwise, generate a fresh 256-bit hex secret with
+         ``secrets.token_hex(32)`` and persist it to ``<runtime>/audit.key``.
+
+    The runtime directory is git-ignored, so generated keys never leave the
+    machine. Deleting ``audit.key`` (or rotating the env var) invalidates
+    verification of pre-existing local audit logs — by design, since the
+    chain is HMAC-bound to the secret.
+    """
+    env_secret = os.environ.get("JARVIS_AUDIT_SECRET", "").strip()
+    if env_secret:
+        return env_secret
+
+    runtime_path = Path(runtime_path)
+    runtime_path.mkdir(parents=True, exist_ok=True)
+    key_path = runtime_path / _AUDIT_KEY_FILENAME
+
+    if key_path.exists():
+        existing = key_path.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+
+    new_secret = secrets.token_hex(32)
+    key_path.write_text(new_secret, encoding="utf-8")
+    try:
+        # Best-effort tighten on POSIX; on Windows os.chmod is largely a no-op
+        # but harmless. Real protection comes from runtime/ being git-ignored.
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+    return new_secret
+
+
 class LocalSupervisorAPI:
     """Convenience API for local tools, tests, and future IPC bridges."""
 
@@ -35,7 +78,8 @@ class LocalSupervisorAPI:
         screenshots_path = runtime_path / "screenshots"
         self.screenshots_root = screenshots_path
 
-        self.event_log = SignedEventLog(runtime_path / "events.jsonl", secret="jarvis-local-dev-secret")
+        audit_secret = _load_or_create_audit_secret(runtime_path)
+        self.event_log = SignedEventLog(runtime_path / "events.jsonl", secret=audit_secret)
         self.memory = MemoryStore(runtime_path / "memory")
         self.policy = PolicyEngine(config_path)
         # Shared, in-process browser context. Populated by

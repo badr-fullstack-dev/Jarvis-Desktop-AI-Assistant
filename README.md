@@ -1,6 +1,44 @@
 # Jarvis Guarded Desktop Assistant
 
-This repository is the first working checkpoint for a Windows-first desktop AI assistant with guarded autonomy, a futuristic HUD, and a multi-subagent runtime.
+This repository is the first working checkpoint for a Windows-first
+desktop AI assistant with **guarded autonomy**, a futuristic HUD, and a
+multi-subagent runtime.
+
+> **Status: experimental.** This project is a guarded-autonomy
+> assistant — every action passes through a policy engine and an
+> append-only signed audit log, and Tier-2 actions require approval.
+> It is **not** a fully trusted autonomous operator. Treat it the way
+> you would treat a junior engineer with `sudo`: useful, supervised,
+> and never given the wheel unattended.
+
+## Before publishing / local privacy
+
+The runtime writes private data to your machine. None of it should
+ever land in a public repo, issue, PR, or screenshot.
+
+- **`runtime/` is private and git-ignored.** It contains the signed
+  audit log (`events.jsonl`), the per-install audit signing key
+  (`audit.key`), the memory store, screenshots, and any OCR or audio
+  debug dumps. Never commit anything under `runtime/`.
+- **No one should commit** local screenshots, OCR text outputs,
+  microphone audio, memory JSON, or `*.log` files. `.gitignore` covers
+  the standard locations — do not bypass it with `git add -f`.
+- **Public issues must not include private data.** Use synthetic
+  fixtures when reporting bugs. Vulnerabilities go through
+  [`SECURITY.md`](SECURITY.md), not the public tracker.
+- **Audit signing key.** The HMAC secret used to chain-sign the audit
+  log is loaded from `JARVIS_AUDIT_SECRET` if set, otherwise
+  auto-generated at `runtime/audit.key` on first run via
+  `secrets.token_hex(32)`. Deleting that key invalidates verification
+  of all *previous* local audit log entries — that is intentional, the
+  chain is HMAC-bound to the secret. Never commit the key.
+- **`.env` files are git-ignored.** A documented template lives at
+  [`.env.example`](.env.example); copy it to `.env` locally if you
+  need to opt in to non-default OCR/STT backends.
+
+See [`SECURITY.md`](SECURITY.md) for the threat model and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution rules
+(no secrets, no raw user data in tests, no capability bypasses).
 
 ## What is implemented
 
@@ -106,6 +144,22 @@ Run the Python test suite:
 ```powershell
 python -m unittest discover -s services/orchestrator/tests -t services/orchestrator
 ```
+
+## Continuous integration
+
+A GitHub Actions workflow at `.github/workflows/ci.yml` runs on every
+pull request and on pushes to `main`. It executes on `windows-latest`
+to match the Windows-first / Tauri target and performs:
+
+1. `npm install` at the repo root (workspaces include the HUD).
+2. The Python test suite via
+   `python -m unittest discover -s services/orchestrator/tests -t services/orchestrator`.
+3. `npm run build` inside `apps/hud` (TypeScript + Vite).
+4. `cargo check --locked` inside `apps/hud/src-tauri`.
+
+The workflow is intentionally conservative: no secrets, no publishing,
+no installer builds. It is suitable as a required status check for
+GitHub branch protection on `main`.
 
 ## Capability adapters (v1)
 
@@ -1360,4 +1414,10 @@ for debugging):
   added to `_HARD_REDACT_KEYS` for the redactor to know about it.
   When in doubt, prefer the same key names already in
   `reflection.is_sensitive_payload`.
+
+## License
+
+This repository is public for portfolio/client review only. The code is
+not open-source and may not be reused without written permission.
+See [LICENSE](LICENSE) for the full notice.
 

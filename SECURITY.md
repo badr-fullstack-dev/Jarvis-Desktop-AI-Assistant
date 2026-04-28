@@ -1,0 +1,72 @@
+# Security Policy
+
+Jarvis is an **experimental, locally-running, guarded-autonomy desktop
+assistant**. It is not a fully trusted autonomous operator. This file
+covers how to report vulnerabilities and what the project's security
+posture actually is so you can judge it for yourself.
+
+## Reporting a vulnerability
+
+Please **do not open a public GitHub issue** for a suspected
+vulnerability.
+
+Instead, use GitHub's private vulnerability reporting:
+
+1. Open the repository's **Security** tab.
+2. Choose **Report a vulnerability**.
+3. Include:
+   - Affected file(s) and version (commit SHA).
+   - Reproduction steps. Use synthetic data only — no real screenshots,
+     audit logs, OCR text, microphone audio, or memory contents.
+   - Impact assessment (read-only? capability bypass? policy bypass?).
+
+I will acknowledge reports as quickly as I can and aim to fix
+high-severity issues before any public disclosure.
+
+## Threat model (what this project does and does not protect against)
+
+**In scope.** The repository is designed to defend against:
+
+- Accidental escalation: every action passes through `ActionGateway`
+  and `PolicyEngine`. Tier-2 actions require explicit approval.
+- Silent action: `SignedEventLog` chain-signs `runtime/events.jsonl`
+  with a per-install HMAC key (`runtime/audit.key`, git-ignored).
+- Sensitive payload leakage to memory: `reflection.is_sensitive_payload`
+  scrubs the canonical user-content keys produced by the existing
+  capability adapters before anything is stored.
+- Mic/screen privacy: the microphone is **push-to-talk only** and only
+  the HUD records. OCR/STT default to clearly-labelled stubs; nothing
+  real happens without an explicit env-var opt-in.
+
+**Out of scope.** This project does **not** protect against:
+
+- A malicious operator on the same machine. Anything `runtime/`
+  contains is local data and is no more protected than the user's
+  filesystem.
+- Tamper *recovery*. A failed `verify_chain` is surfaced loudly but
+  the assistant will not auto-repair the audit log — repairing a
+  signed log automatically would destroy its evidentiary value.
+- Cloud / third-party providers. The assistant does not phone home,
+  but if you opt in to a non-stub STT/OCR backend that itself sends
+  data anywhere, that is between you and that backend.
+- Supply chain. Pin and review your own dependencies.
+
+## Secrets and local data
+
+- The audit signing key lives at `runtime/audit.key` and is generated
+  with `secrets.token_hex(32)` on first run. `runtime/` is git-ignored.
+- No real API keys, OAuth tokens, or third-party credentials are
+  required to run the default configuration. If you wire one in via
+  env vars, keep it in a local `.env` (also git-ignored) — never commit
+  it.
+- `runtime/`, screenshots, OCR text, microphone debug dumps, memory
+  files, and event logs are **private local data**. Do not paste any
+  of them into public issues, PRs, or discussions.
+
+## Responsible-disclosure expectations
+
+- I appreciate reproducible reports with synthetic data.
+- I will credit reporters who want credit, and respect requests to
+  remain anonymous.
+- This is a personal/experimental project — please be patient with
+  response times.

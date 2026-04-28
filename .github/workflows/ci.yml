@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Build & test (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/hud/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('apps/hud/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: npm install (root workspace)
+        run: npm install
+
+      - name: Python unittest suite
+        run: python -m unittest discover -s services/orchestrator/tests -t services/orchestrator
+
+      - name: HUD TypeScript build
+        working-directory: apps/hud
+        run: npm run build
+
+      - name: cargo check (Tauri shell)
+        working-directory: apps/hud/src-tauri
+        run: cargo check --locked

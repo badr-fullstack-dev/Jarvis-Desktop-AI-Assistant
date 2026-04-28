@@ -1,0 +1,62 @@
+name: CodeQL
+
+# Static analysis for the JavaScript/TypeScript surface of the HUD and
+# the Python orchestrator. Rust is not a CodeQL-supported language at
+# the time of writing, so the Tauri shell is covered by `cargo check`
+# in `ci.yml` plus `cargo audit` in any future supply-chain workflow.
+#
+# This workflow is INFORMATIONAL by default. It is intentionally not
+# wired up as a required status check — see the bottom of this file
+# for instructions on promoting it to required once the alert volume
+# is understood.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly cadence so a quiet repo still gets fresh analysis runs.
+    - cron: '21 4 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, python]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ matrix.language }}'
+
+# Promoting CodeQL to a required status check
+# -------------------------------------------
+# 1. Settle the alert backlog under the Security tab.
+# 2. In repo Settings → Branches → main → Branch protection rules,
+#    add "CodeQL / Analyze (javascript-typescript)" and
+#    "CodeQL / Analyze (python)" to "Require status checks to pass".
+# 3. Optionally tighten by switching `queries: security-and-quality`
+#    to `security-extended` for higher recall.

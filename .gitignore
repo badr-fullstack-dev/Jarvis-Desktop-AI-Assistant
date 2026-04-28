@@ -1,18 +1,90 @@
+# --- Node / npm ---------------------------------------------------------
 node_modules/
 dist/
 build/
+.npm/
+# Lockfiles ARE intentionally tracked — do NOT add package-lock.json here.
+
+# --- Python -------------------------------------------------------------
 .venv/
+venv/
+env/
 __pycache__/
 *.pyc
+*.pyo
 .pytest_cache/
 .mypy_cache/
-.DS_Store
-Thumbs.db
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# --- Rust / Tauri build outputs -----------------------------------------
+target/
+apps/hud/src-tauri/target/
+apps/hud/src-tauri/gen/schemas/
+# Cargo.lock IS tracked for the Tauri shell — do NOT add it here.
+
+# --- Local runtime / private data ---------------------------------------
+# Everything the assistant writes locally is private and must never
+# leave the developer's machine. See README "Before publishing / local
+# privacy".
+runtime/
+**/runtime/
+*.audit.key
+audit.key
+
+# Screenshots and OCR output
+screenshots/
+**/screenshots/
+*.ocr.txt
+*.ocr.json
+
+# Microphone / audio dumps
+audio/
+**/audio/
+*.wav
+*.mp3
+*.flac
+
+# Memory / reflection artefacts
+memory/
+**/memory/
+memory.json
+memory-*.json
+reflection-*.json
+
+# Event log
+events.jsonl
+
+# Local model files (whisper, ggml, etc.)
+models/
+**/models/
+*.bin
+*.gguf
+*.ggml
+*.onnx
+*.pt
+*.safetensors
+
+# --- Environment / secrets ----------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- IDE / editor / OS --------------------------------------------------
 .idea/
 .vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Logs ---------------------------------------------------------------
 *.log
-runtime/
-apps/hud/src-tauri/target/
-tasks/lessons.md 
+logs/
+
+# --- Project-local notes (developer-only) -------------------------------
+tasks/lessons.md
 CLAUDE.md
 graphify-out/
