@@ -4,7 +4,11 @@ import { ActionResultView, StructuredCapability } from "./contracts";
 
 type FieldSpec = { key: string; label: string; placeholder: string; textarea?: boolean };
 
-const CAPABILITY_FIELDS: Record<StructuredCapability, FieldSpec[]> = {
+// Only the capabilities exposed in the Action Panel dropdown need field
+// specs. Others (desktop.*, browser.summarize, app.focus, …) are reached
+// through the planner/workflow paths, not this manual form, so we use
+// Partial here and fall back to [] below.
+const CAPABILITY_FIELDS: Partial<Record<StructuredCapability, FieldSpec[]>> = {
   "browser.navigate":  [{ key: "url",  label: "URL",  placeholder: "https://example.com" }],
   "browser.read_page": [{ key: "url",  label: "URL",  placeholder: "https://example.com" }],
   "filesystem.read":   [{ key: "path", label: "Path", placeholder: "configs/policy.default.json" }],
@@ -48,7 +52,7 @@ export function ActionPanel({ currentTaskId, degraded, onAfterAction, latestResu
   const [error, setError] = useState<string | null>(null);
   const [lastOutcome, setLastOutcome] = useState<ProposeOutcome | null>(null);
 
-  const fields = CAPABILITY_FIELDS[capability];
+  const fields = CAPABILITY_FIELDS[capability] ?? [];
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();

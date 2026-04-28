@@ -51,6 +51,20 @@ high-severity issues before any public disclosure.
   data anywhere, that is between you and that backend.
 - Supply chain. Pin and review your own dependencies.
 
+## Static analysis
+
+CodeQL static analysis runs through GitHub's repository-level
+**default setup** (Settings → Code security → Code scanning). That
+covers JavaScript/TypeScript and Python automatically. Rust is not a
+CodeQL-supported language at the time of writing, so the Tauri shell
+is exercised by `cargo check --locked` in `.github/workflows/ci.yml`.
+
+A custom CodeQL workflow file is intentionally **not** committed —
+GitHub rejects advanced-config SARIF uploads while default setup is
+enabled, and default setup is sufficient for this project. To switch
+to advanced configuration later, first disable default setup in
+repository settings, then add a workflow under `.github/workflows/`.
+
 ## Secrets and local data
 
 - The audit signing key lives at `runtime/audit.key` and is generated
