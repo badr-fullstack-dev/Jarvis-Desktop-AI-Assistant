@@ -51,6 +51,28 @@ high-severity issues before any public disclosure.
   data anywhere, that is between you and that backend.
 - Supply chain. Pin and review your own dependencies.
 
+## Known Dependabot alerts and accepted scope
+
+Some Dependabot alerts cannot be fixed at the leaf-package level
+because their patched versions are pinned upstream by Tauri 2.10.x.
+Where the affected code path is provably outside the Windows-first
+runtime surface, the alert is documented here rather than force-bumped.
+
+- **`glib` `<0.20.0` (unsoundness in `VariantStrIter`).** Pulled in
+  exclusively via the GTK / WebKitGTK path (`gtk → atk → glib`),
+  which is Linux-only. The Windows-first build uses WebView2-COM and
+  never links GTK or `glib`. Will be picked up automatically when
+  Tauri publishes a release using `gtk@0.21+`.
+- **`rand` `<0.8.6` (unsoundness with custom logger).** Pulled in
+  exclusively as a build-time dependency through
+  `phf_codegen → selectors → kuchikiki → tauri-utils`. It generates
+  CSS-selector lookup tables at compile time; runtime never executes
+  this code, and the affected `rand::rng()` path is not used by any
+  build script we ship. Will be picked up automatically when
+  `tauri-utils` updates `phf` past 0.10.
+
+These are revisited on every Tauri release.
+
 ## Static analysis
 
 CodeQL static analysis runs through GitHub's repository-level
